@@ -1,0 +1,199 @@
+import re
+from decimal import Decimal, InvalidOperation
+from typing import Any
+
+from app.ai.schemas import Interpretation
+from app.ledger.models import Entry
+from app.ledger.schemas import EntryOut, ExtractedEntry
+
+NOT_UNDERSTOOD_MESSAGE = "Sorry, I didn't catch that. Can you say it again?"
+FALLBACK_MESSAGE = "I can record sales, credit sales, payments and expenses. Tell me what you sold, collected or spent."
+
+_NUMBER_WORDS: dict[str, int] = {
+    "zero": 0, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7,
+    "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12, "thirteen": 13, "fourteen": 14,
+    "fifteen": 15, "sixteen": 16, "seventeen": 17, "eighteen": 18, "nineteen": 19, "twenty": 20,
+    "thirty": 30, "forty": 40, "fifty": 50, "sixty": 60, "seventy": 70, "eighty": 80, "ninety": 90,
+}
+_SCALES: dict[str, int] = {"k": 1_000, "thousand": 1_000, "m": 1_000_000, "million": 1_000_000}
+_FILLERS = {"and", "naira", "ngn"}
+
+
+def parse_naira_amount(text: str) -> Decimal | None:
+    """Naira shorthand and words to an amount, in code, never by the model (FR-S4).
+    "ten k" -> 10000, "2.5k" -> 2500, "sixty k" -> 60000, "₦60,000" -> 60000,
+    "two and half k" -> 2500. Returns None when the phrase is not a recognisable amount."""
+    cleaned = text.lower().replace("₦", " ").replace(",", "").replace("-", " ").strip()
+    cleaned = re.sub(r"\bn(?=\d)", "", cleaned)  # "N60000"
+    cleaned = re.sub(r"(\d)([a-z])", r"\1 \2", cleaned)  # "2.5k" -> "2.5 k"
+    tokens = cleaned.split()
+    if not tokens:
+        return None
+
+    total = Decimal(0)
+    current = Decimal(0)
+    seen_number = False
+    for index, token in enumerate(tokens):
+        if token in _FILLERS:
+            continue
+        if token == "a":
+            # "a thousand" is 1000; in "and a half" the "a" adds nothing.
+            if index + 1 < len(tokens) and tokens[index + 1] == "half":
+                continue
+            current += 1
+            seen_number = True
+        elif token in _NUMBER_WORDS:
+            current += _NUMBER_WORDS[token]
+            seen_number = True
+        elif re.fullmatch(r"\d+(\.\d+)?", token):
+            current += Decimal(token)
+            seen_number = True
+        elif token == "half":
+            current += Decimal("0.5")
+            seen_number = True
+        elif token == "hundred":
+            current = (current or Decimal(1)) * 100
+        elif token in _SCALES:
+            total += (current or Decimal(1)) * _SCALES[token]
+            current = Decimal(0)
+        else:
+            return None
+    if not seen_number:
+        return None
+    try:
+        return (total + current).quantize(Decimal("0.01"))
+    except InvalidOperation:
+        return None
+
+
+def to_extracted(interpretation: Interpretation) -> ExtractedEntry:
+    """Interpretation to ledger fields; the amount comes from code parsing the quoted phrase."""
+    amount = parse_naira_amount(interpretation.amount_text) if interpretation.amount_text else None
+    return ExtractedEntry(
+        type=interpretation.type,
+        item=interpretation.item or None,
+        quantity=interpretation.quantity,
+        unit=interpretation.unit or None,
+        amount_ngn=amount,
+        customer=interpretation.customer or None,
+        due_date=interpretation.due_date,
+        confidence=interpretation.confidence,
+    )
+
+
+def is_low_confidence(confidence: float | None, threshold: float) -> bool:
+    return confidence is not None and confidence < threshold
+
+
+def confirmation_question(fields: dict[str, Any]) -> str:
+    """Asked when a complete entry was read with low confidence (FR-S5)."""
+    entry_type = _TYPE_LABELS.get(str(fields.get("type")), "entry")
+    item = f" of {fields['item']}" if fields.get("item") else ""
+    customer = f" for {fields['customer']}" if fields.get("customer") else ""
+    amount = Decimal(str(fields.get("amount_ngn") or 0))
+    return f"Just to confirm: {entry_type}{item}{customer}, {format_naira(amount)}?"
+
+
+CUSTOMER_TYPES = {"credit_sale", "payment_received"}
+SALE_TYPES = {"sale", "credit_sale"}
+
+_QUESTIONS = {
+    "type": "Was this a sale, a credit sale, a payment or an expense?",
+    "amount_ngn": "How much was it?",
+    "customer": "Who is the customer?",
+}
+
+_TYPE_LABELS = {
+    "sale": "sale",
+    "credit_sale": "credit sale",
+    "payment_received": "payment",
+    "expense": "expense",
+}
+
+
+def merge_partial(partial: dict[str, Any], extracted: ExtractedEntry) -> dict[str, Any]:
+    """Fill the pending partial entry with whatever the new message supplies."""
+    return {**partial, **extracted.model_dump(mode="json", exclude_none=True)}
+
+
+def missing_fields(fields: dict[str, Any]) -> list[str]:
+    missing: list[str] = []
+    if fields.get("type") is None:
+        missing.append("type")
+    if fields.get("amount_ngn") is None:
+        missing.append("amount_ngn")
+    if fields.get("type") in CUSTOMER_TYPES and not fields.get("customer"):
+        missing.append("customer")
+    return missing
+
+
+def clarification_question(missing: list[str]) -> str:
+    """Fallback wording when the interpreter does not phrase the question; always one question."""
+    return _QUESTIONS[missing[0]]
+
+
+def ambiguous_customer_question(names: list[str]) -> str:
+    return f"Do you mean {' or '.join(sorted(names))}?"
+
+
+def stock_effect(entry_type: str, quantity: Decimal | None) -> tuple[Decimal, str] | None:
+    """Sales take stock out; an expense on a stocked item is a restock (FR-S25, S26)."""
+    if quantity is None:
+        return None
+    if entry_type in SALE_TYPES:
+        return -quantity, "sale"
+    if entry_type == "expense":
+        return quantity, "restock"
+    return None
+
+
+def format_naira(amount: Decimal) -> str:
+    return f"₦{amount:,.0f}" if amount == amount.to_integral_value() else f"₦{amount:,.2f}"
+
+
+def build_confirmation(entry: Entry, customer_name: str | None, corrected: bool) -> str:
+    """One line built from saved fields only, never from model text (FR-S7)."""
+    parts = [_TYPE_LABELS[entry.type]]
+    if entry.item:
+        quantity = f"{entry.quantity.normalize():f} " if entry.quantity is not None else ""
+        unit = f"{entry.unit} " if entry.unit else ""
+        parts.append(f"of {quantity}{unit}{entry.item}")
+    if customer_name:
+        parts.append(f"{'from' if entry.type == 'payment_received' else 'to'} {customer_name}")
+    parts.append(f"for {format_naira(entry.amount_ngn)}")
+    if entry.due_date:
+        parts.append(f"due {entry.due_date.isoformat()}")
+    prefix = "Updated" if corrected else "Saved"
+    return f"{prefix}: {' '.join(parts)}."
+
+
+def entry_snapshot(entry: Entry, customer_name: str | None) -> dict[str, Any]:
+    """JSON-safe copy of the editable fields, for the correction audit trail."""
+    return {
+        "type": entry.type,
+        "item": entry.item,
+        "quantity": str(entry.quantity) if entry.quantity is not None else None,
+        "unit": entry.unit,
+        "amount_ngn": str(entry.amount_ngn),
+        "customer": customer_name,
+        "due_date": entry.due_date.isoformat() if entry.due_date else None,
+        "confidence": entry.confidence,
+    }
+
+
+def to_entry_out(entry: Entry, customer_name: str | None) -> EntryOut:
+    return EntryOut(
+        id=entry.id,
+        type=entry.type,  # pyright: ignore[reportArgumentType]  (DB check constraint guarantees the literal)
+        item=entry.item,
+        quantity=entry.quantity,
+        unit=entry.unit,
+        amount_ngn=entry.amount_ngn,
+        customer=customer_name,
+        due_date=entry.due_date,
+        confidence=entry.confidence,
+        status=entry.status,
+        raw_text=entry.raw_text,
+        created_at=entry.created_at,
+        updated_at=entry.updated_at,
+    )
