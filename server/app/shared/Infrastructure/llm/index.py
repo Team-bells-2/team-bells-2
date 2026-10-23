@@ -38,7 +38,7 @@ _NUMBER_WORDS = {
     "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
     "half": 0.5,
 }
-_UNITS = r"bags?|bottles?|measures?|dericas?|painters?|pieces?|tins?|kg|litres?|cartons?|baskets?"
+_UNITS = r"bags?|bottles?|measures?|dericas?|painters?|pieces?|tins?|kg|litres?|cartons?|baskets?|packets?|packs?|crates?|sachets?|kegs?|bundles?|dozens?|tubers?|paints?|rolls?"
 _QUANTITY = r"\d+(?:\.\d+)?|one|two|three|four|five|six|seven|eight|nine|ten|half"
 _ITEM_NAMES = ["palm oil", "vegetable oil", "groundnut oil", "tomatoes", "tomato", "garri", "beans", "rice", "yam", "oil"]
 
@@ -131,7 +131,7 @@ def _demo_extract(text: str, context: dict[str, Any]) -> dict[str, Any] | None:
 
     is_credit = any(phrase in normalized for phrase in ("on credit", "owe", "go pay", "put am for account", "will pay", "credit", "pay later", "pay me later", "account"))
     is_payment = not is_credit and any(phrase in normalized for phrase in ("paid me", "don pay", "pay me", "received payment", "pay back", "paid"))
-    is_expense = any(phrase in normalized for phrase in ("i spend", "i spent", "expense", "transport", "i buy", "i bought", "restock")) and not is_payment
+    is_expense = any(phrase in normalized for phrase in ("i spend", "i spent", "expense", "transport", "i buy", "i bought", "go buy", "went buy", "i don buy", "restock", "i purchase", "i purchased")) and not is_payment
     entry_type = "payment_received" if is_payment else "expense" if is_expense else "credit_sale" if is_credit else "sale"
 
     quantity, unit = _quantity(normalized)
@@ -146,6 +146,10 @@ def _demo_extract(text: str, context: dict[str, Any]) -> dict[str, Any] | None:
     item = next((name for name in _ITEM_NAMES if re.search(rf"\b{name}\b", item_text)), None)
     if item == "tomato":
         item = "tomatoes"
+    if item is None and (named := re.search(rf"\b(?:{_QUANTITY})\s+(?:{_UNITS})(?:\s+and\s+(?:a\s+)?half)?\s+(?:of\s+)?([a-z][a-z-]+)", item_text)):
+        # Any goods named right after "one packet of ...", e.g. Pepsi.
+        if named.group(1) not in {"for", "to", "give", "at", "on", "and", "na", "with"}:
+            item = named.group(1)
 
     customer = _match_known_customer(normalized, context.get("customers", []))
     known_mentions = sum(

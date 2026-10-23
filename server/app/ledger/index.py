@@ -128,6 +128,11 @@ def _sync_stock(db: Session, trader_id: int, entry: Entry) -> None:
     item = None
     if entry.item:
         item = db.scalar(select(InventoryItem).where(InventoryItem.trader_id == trader_id, func.lower(InventoryItem.name) == entry.item.lower()))
+    if item is None and entry.type == "expense" and entry.item and entry.quantity and entry.unit:
+        # A purchase of goods with a quantity stocks a new item; spending such as transport has no quantity and does not.
+        item = InventoryItem(trader_id=trader_id, name=entry.item.strip().lower(), unit=normalize_unit(entry.unit), unit_cost_ngn=round(entry.amount_ngn / entry.quantity))
+        db.add(item)
+        db.flush()
     entry.inventory_item_id = item.id if item else None
     entry.stock_warning = None
     if entry.unit is None and item is not None and entry.quantity is not None:
@@ -220,7 +225,8 @@ def _hold(db: Session, trader: Trader, pending: PendingClarification | None, pay
 def _missing_question(data: EntryData) -> str | None:
     if data.amount_ngn is None:
         if data.quantity is not None and data.unit:
-            return f"How much did you collect for the {data.quantity:g} {data.unit}{'s' if data.quantity > 1 and not data.unit.endswith('s') else ''}?"
+            verb = "pay" if data.type == "expense" else "collect"
+            return f"How much did you {verb} for the {data.quantity:g} {data.unit}{'s' if data.quantity > 1 and not data.unit.endswith('s') else ''}?"
         return "How much was it?"
     if data.type in {"credit_sale", "payment_received"} and not data.customer:
         return "Which customer is this for?"
