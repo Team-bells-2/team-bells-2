@@ -16,7 +16,7 @@ class OnboardingRequest(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     phone: str = Field(min_length=7, max_length=32)
     business_name: str = Field(min_length=1, max_length=160)
-    sector: str = Field(default="foodstuff", min_length=1, max_length=40)
+    sector: str = Field(min_length=1, max_length=40)
     location_name: str = Field(min_length=1, max_length=120)
     latitude: float | None = Field(default=None, ge=-90, le=90)
     longitude: float | None = Field(default=None, ge=-180, le=180)

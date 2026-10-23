@@ -3,14 +3,23 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 EntryType = Literal["sale", "credit_sale", "payment_received", "expense"]
 
 
 class MessageRequest(BaseModel):
     text: str | None = Field(default=None, min_length=1, max_length=4000)
+    # Voice note recorded in the app, base64-encoded (for example M4A or WAV).
+    audio_base64: str | None = Field(default=None, max_length=15_000_000)
+    audio_filename: str = Field(default="voice.m4a", max_length=120)
     client_message_id: str = Field(min_length=8, max_length=120)
+
+    @model_validator(mode="after")
+    def text_or_audio(self) -> MessageRequest:
+        if not self.text and not self.audio_base64:
+            raise ValueError("Send text or audio_base64.")
+        return self
 
 
 class EntryData(BaseModel):
@@ -46,6 +55,7 @@ class MessageResponse(BaseModel):
     question: str | None = None
     entry: EntryResponse | None = None
     updated: bool = False
+    transcript: str | None = None
 
 
 class EntriesResponse(BaseModel):
