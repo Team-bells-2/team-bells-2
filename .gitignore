@@ -5,4 +5,4 @@
 __pycache__/
 *.py[cod]
 .pytest_cache/
-backend.py/*.sqlite3
+backend.py/*.sqlite3*.sqlite3
