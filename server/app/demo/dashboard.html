@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OJA Dashboard</title>
+<style>
+  :root { --bg: #f6f7f9; --card: #fff; --ink: #1c2430; --muted: #5d6877; --line: #e2e6ec; --accent: #0f7b6c; --warn: #b45309; --bad: #b42318; --good: #157f3b; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #11151b; --card: #1a2029; --ink: #e8edf3; --muted: #9aa6b4; --line: #2b3440; --accent: #3fb8a5; --warn: #f0a44b; --bad: #f2786d; --good: #5cc98a; } }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.45 system-ui, -apple-system, Segoe UI, sans-serif; background: var(--bg); color: var(--ink); }
+  header { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between; padding: 14px 20px; border-bottom: 1px solid var(--line); background: var(--card); }
+  h1 { font-size: 18px; margin: 0; } h2 { font-size: 15px; margin: 0 0 10px; }
+  main { display: grid; gap: 16px; padding: 16px; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); }
+  section { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 14px; overflow-x: auto; }
+  .wide { grid-column: 1 / -1; }
+  table { width: 100%; border-collapse: collapse; } th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; font-size: 12px; }
+  .raw { color: var(--muted); font-style: italic; }
+  .pill { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 12px; border: 1px solid currentColor; }
+  .pending { color: var(--warn); } .approved, .ok, .token_issued { color: var(--good); } .rejected, .revoked, .expired, .invalid_token, .missing_token, .overdue { color: var(--bad); }
+  button { font: inherit; padding: 6px 12px; border-radius: 6px; border: 1px solid var(--line); background: var(--card); color: var(--ink); cursor: pointer; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  input, select { font: inherit; padding: 6px 8px; border-radius: 6px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); }
+  .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 8px; }
+  .muted { color: var(--muted); } .error { color: var(--bad); } .big { font-size: 22px; font-weight: 700; }
+  .flash { animation: flash 1.5s ease-out; } @keyframes flash { from { background: color-mix(in srgb, var(--accent) 25%, transparent); } to { background: transparent; } }
+  #chat div { margin: 4px 0; }
+</style>
+</head>
+<body>
+<header>
+  <h1>OJA · judges' dashboard</h1>
+  <div class="row" style="margin:0">
+    <input id="token" placeholder="Trader session token" size="34">
+    <button onclick="saveToken()">Use token</button>
+    <button onclick="demo('reset')">Reset demo data</button>
+    <button class="primary" onclick="demo('seed')">Seed demo data</button>
+  </div>
+</header>
+<p id="status" class="muted" style="padding:0 20px"></p>
+<main>
+  <section class="wide">
+    <h2>Ledger entries <span class="muted">(newest first, live)</span></h2>
+    <table><thead><tr><th>Time</th><th>Type</th><th>Item</th><th>Qty</th><th>Amount</th><th>Customer</th><th>Due</th><th>Confidence</th><th>Transcript</th></tr></thead><tbody id="entries"></tbody></table>
+  </section>
+  <section>
+    <h2>Customers and debts</h2>
+    <table><thead><tr><th>Customer</th><th>Nicknames</th><th>Owes</th></tr></thead><tbody id="customers"></tbody></table>
+  </section>
+  <section>
+    <h2>Agent access</h2>
+    <div id="access" class="muted">No requests yet.</div>
+  </section>
+  <section>
+    <h2>Lender agent · QuickLoan</h2>
+    <div class="row"><input id="agentPhone" placeholder="Trader phone" size="14"><button class="primary" onclick="agentRequest()">Request access</button></div>
+    <div id="agent" class="muted">Step 1: request access to the trader's totals.</div>
+  </section>
+  <section>
+    <h2>Trader console <span class="muted">(fallback for the app)</span></h2>
+    <div class="row"><input id="msg" placeholder="I sell two bags rice give Mama Ngozi 60k, she go pay Friday" style="flex:1"><button class="primary" onclick="send()">Send</button><button onclick="askQ()">Ask</button></div>
+    <div id="chat"></div>
+  </section>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+const naira = (n) => n == null ? "" : "₦" + Number(n).toLocaleString("en-NG");
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const store = { get(k) { try { return localStorage.getItem(k) || ""; } catch { return ""; } }, set(k, v) { try { localStorage.setItem(k, v); } catch {} } };
+let token = store.get("oja_token"), seenEntry = 0, agent = JSON.parse(store.get("oja_agent") || "null");
+$("token").value = token; $("agentPhone").value = store.get("oja_phone");
+
+async function api(path, options = {}, auth = token) {
+  const headers = { "Content-Type": "application/json", ...(options.headers || {}) };
+  if (auth) headers.Authorization = "Bearer " + auth;
+  const response = await fetch(path, { ...options, headers });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) throw Object.assign(new Error(body?.error?.message || response.statusText), { status: response.status, body });
+  return body;
+}
+function saveToken() { token = $("token").value.trim(); store.set("oja_token", token); seenEntry = 0; refresh(); }
+async function demo(action) {
+  try {
+    const result = await api("/demo/" + action, { method: "POST" }, null);
+    if (action === "seed") { $("token").value = result.session_token; $("agentPhone").value = result.phone; store.set("oja_phone", result.phone); saveToken(); }
+    else { token = ""; $("token").value = ""; store.set("oja_token", ""); agent = null; store.set("oja_agent", "null"); }
+    $("status").textContent = action === "seed" ? "Demo trader seeded: " + result.phone : "Demo data reset.";
+    refresh();
+  } catch (e) { $("status").textContent = "Demo control failed: " + e.message; }
+}
+
+async function refresh() {
+  if (!token) { $("status").textContent = "Seed demo data or paste a trader session token."; return; }
+  try {
+    const [entries, customers, access] = await Promise.all([api("/entries?limit=30"), api("/customers"), api("/access-requests")]);
+    const newest = entries.items[0]?.id || 0;
+    $("entries").innerHTML = entries.items.map((e) => `<tr class="${e.id > seenEntry && seenEntry ? "flash" : ""}"><td>${new Date(e.created_at + (e.created_at.endsWith("Z") || e.created_at.includes("+") ? "" : "Z")).toLocaleTimeString()}</td><td>${esc(e.type.replace("_", " "))}</td><td>${esc(e.item)}</td><td>${e.quantity ?? ""} ${esc(e.unit)}</td><td>${naira(e.amount_ngn)}</td><td>${esc(e.customer)}</td><td>${esc(e.due_date)}</td><td>${e.confidence ?? ""}</td><td class="raw">${esc(e.raw_text)}</td></tr>`).join("") || `<tr><td colspan="9" class="muted">No entries yet.</td></tr>`;
+    seenEntry = newest;
+    $("customers").innerHTML = customers.map((c) => `<tr><td>${esc(c.name)}</td><td class="muted">${esc(c.aliases.join(", "))}</td><td>${c.amount_owed_ngn ? `<b>${naira(c.amount_owed_ngn)}</b>` : "—"} ${c.overdue ? '<span class="pill overdue">overdue</span>' : ""}</td></tr>`).join("") || `<tr><td colspan="3" class="muted">No customers yet.</td></tr>`;
+    $("access").innerHTML = access.map((r) => `<div style="margin-bottom:12px"><div class="row"><b>${esc(r.agent_name)}</b><span class="pill ${r.status}">${r.status}</span><span class="muted">${esc(r.scopes.join(", "))}${r.expires_at ? " · expires " + new Date(r.expires_at).toLocaleString() : ""}</span></div><div class="muted">${esc(r.purpose)}</div>${r.status === "pending" ? `<div class="row"><button class="primary" onclick="decide(${r.id}, true)">Approve as trader</button><button onclick="decide(${r.id}, false)">Reject</button></div>` : ""}${r.status === "approved" ? `<div class="row"><button onclick="revoke(${r.id})">Revoke as trader</button></div>` : ""}<table><tbody>${r.log.map((l) => `<tr><td class="muted">${new Date(l.at).toLocaleTimeString()}</td><td>${esc(l.endpoint)}</td><td><span class="pill ${l.result}">${esc(l.result)}</span></td></tr>`).join("")}</tbody></table></div>`).join("") || "No requests yet.";
+    $("status").textContent = "Live · updated " + new Date().toLocaleTimeString();
+  } catch (e) { $("status").textContent = e.status === 401 ? "Token rejected. Seed demo data or paste a new token." : "Backend unreachable: " + e.message; }
+}
+async function decide(id, approve) { await api(`/access-requests/${id}/approve`, { method: "POST", body: JSON.stringify({ approve }) }); refresh(); }
+async function revoke(id) { await api(`/access/${id}`, { method: "DELETE" }); refresh(); }
+
+async function agentRequest() {
+  const phone = $("agentPhone").value.trim(); store.set("oja_phone", phone);
+  try {
+    const r = await api("/access-requests", { method: "POST", body: JSON.stringify({ trader_phone: phone, agent_name: "QuickLoan agent", purpose: "Assess credit readiness for a ₦200,000 stock loan", data_scopes: ["sales_total", "active_days", "total_owed"] }) }, null);
+    agent = { id: r.request_id, claim: r.claim_secret, token: null }; store.set("oja_agent", JSON.stringify(agent)); agentTick();
+  } catch (e) { $("agent").innerHTML = `<span class="error">${esc(e.message)}</span>`; }
+}
+async function agentTick() {
+  if (!agent) return;
+  try {
+    if (!agent.token) {
+      const s = await api(`/access-requests/${agent.id}/status`, { headers: { "X-Claim-Secret": agent.claim } }, null);
+      if (s.access_token) { agent.token = s.access_token; store.set("oja_agent", JSON.stringify(agent)); }
+      else if (s.status !== "approved") { $("agent").innerHTML = s.status === "pending" ? "Step 2: waiting for the trader to approve…" : `<span class="error">Request ${esc(s.status)}.</span>`; return; }
+      if (!agent.token) { $("agent").innerHTML = `<span class="error">Token was already collected by another client.</span>`; return; }
+    }
+    const sum = await api("/agent/summary", {}, agent.token);
+    const readiness = sum.active_days >= 5 && sum.sales_total_ngn >= 100000 ? "Likely eligible" : "Needs more trading history";
+    $("agent").innerHTML = `<div class="muted">Step 3: totals-only summary, last ${sum.period_days} days</div><div class="row" style="gap:20px;margin-top:8px"><div><div class="muted">Sales</div><div class="big">${naira(sum.sales_total_ngn)}</div></div><div><div class="muted">Active days</div><div class="big">${sum.active_days ?? "—"}</div></div><div><div class="muted">Owed to trader</div><div class="big">${naira(sum.total_owed_ngn)}</div></div></div><div style="margin-top:8px"><b>Credit readiness:</b> ${readiness}</div><div class="muted">No customer names, transcripts or contact details are shared.</div>`;
+  } catch (e) { $("agent").innerHTML = `<span class="error">Access ended: ${esc(e.message)}</span>`; }
+}
+
+async function send() {
+  const text = $("msg").value.trim(); if (!text) return;
+  $("chat").insertAdjacentHTML("afterbegin", `<div><b>You:</b> ${esc(text)}</div>`); $("msg").value = "";
+  try {
+    const r = await api("/messages", { method: "POST", body: JSON.stringify({ text, client_message_id: crypto.randomUUID() }) });
+    $("chat").insertAdjacentHTML("afterbegin", `<div><b>OJA:</b> ${esc(r.confirmation || r.question)}</div>`); refresh();
+  } catch (e) { $("chat").insertAdjacentHTML("afterbegin", `<div class="error">${esc(e.message)}</div>`); }
+}
+async function askQ() {
+  const question = $("msg").value.trim(); if (!question) return;
+  $("chat").insertAdjacentHTML("afterbegin", `<div><b>You:</b> ${esc(question)}</div>`); $("msg").value = "";
+  try { const r = await api("/ask", { method: "POST", body: JSON.stringify({ question }) }); $("chat").insertAdjacentHTML("afterbegin", `<div><b>OJA:</b> ${esc(r.answer)}</div>`); }
+  catch (e) { $("chat").insertAdjacentHTML("afterbegin", `<div class="error">${esc(e.message)}</div>`); }
+}
+$("msg").addEventListener("keydown", (e) => { if (e.key === "Enter") send(); });
+refresh(); agentTick();
+setInterval(refresh, 2000); setInterval(agentTick, 3000);
+</script>
+</body>
+</html>
