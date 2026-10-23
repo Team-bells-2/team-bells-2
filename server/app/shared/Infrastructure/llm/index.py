@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 from datetime import date, timedelta
 from typing import Any
 
@@ -200,11 +201,44 @@ def _demo_correction(text: str, last_entry: dict[str, Any]) -> dict[str, Any]:
     return changes
 
 
+_CACHE: dict[str, dict[str, Any] | None] = {}
+_CACHE_LIMIT = 500
+CALL_COUNT = 0
+
+
 def _chat_json(system_prompt: str, payload: dict[str, Any], max_tokens: int = 800) -> dict[str, Any] | None:
-    """Single wrapper for every LLM call: timeout, token cap, JSON output."""
+    """Single wrapper for every LLM call (NFR-8): cache, call counter, timeout, token cap, JSON output."""
+    global CALL_COUNT
     if settings.DEMO_MODE or not settings.OPENAI_API_KEY:
         return None
-    response = httpx.post(
+    key = json.dumps([settings.OJA_MODEL, system_prompt, payload], ensure_ascii=False, default=str, sort_keys=True)
+    if key in _CACHE:
+        return _CACHE[key]
+    for attempt in range(2):
+        CALL_COUNT += 1
+        response = _post_chat(system_prompt, payload, max_tokens)
+        # Free tiers rate-limit bursts: wait once, briefly, then let the caller fall back.
+        if response.status_code == 429 and attempt == 0:
+            retry_after = response.headers.get("retry-after", "")
+            time.sleep(min(float(retry_after), 3.0) if retry_after.replace(".", "", 1).isdigit() else 1.5)
+            continue
+        break
+    response.raise_for_status()
+    content = response.json()["choices"][0]["message"]["content"]
+    try:
+        parsed = json.loads(content)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    if len(_CACHE) >= _CACHE_LIMIT:
+        _CACHE.pop(next(iter(_CACHE)))
+    _CACHE[key] = parsed
+    return parsed
+
+
+def _post_chat(system_prompt: str, payload: dict[str, Any], max_tokens: int) -> httpx.Response:
+    return httpx.post(
         f"{settings.OPENAI_BASE_URL.rstrip('/')}/chat/completions",
         headers={"Authorization": f"Bearer {settings.OPENAI_API_KEY}"},
         json={
@@ -218,13 +252,6 @@ def _chat_json(system_prompt: str, payload: dict[str, Any], max_tokens: int = 80
         },
         timeout=settings.LLM_TIMEOUT_SECONDS,
     )
-    response.raise_for_status()
-    content = response.json()["choices"][0]["message"]["content"]
-    try:
-        parsed = json.loads(content)
-    except json.JSONDecodeError:
-        return None
-    return parsed if isinstance(parsed, dict) else None
 
 
 def _validate(result: dict[str, Any] | None) -> EntryData | None:
@@ -246,6 +273,10 @@ def extract_entry(text: str, context: dict[str, Any] | None = None) -> EntryData
                 break
             entry = _validate(result)
             if entry is not None:
+                # Dates are computed in code: models miscount weekdays.
+                due = _due_date(normalized_text, context.get("today"))
+                if entry.type == "credit_sale" and due:
+                    entry = entry.model_copy(update={"due_date": date.fromisoformat(due)})
                 return entry
         else:
             return None

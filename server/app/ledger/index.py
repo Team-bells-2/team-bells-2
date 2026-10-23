@@ -295,6 +295,9 @@ def _process_text(db: Session, trader: Trader, payload: MessageRequest, text: st
             return MessageResponse(status="clarify", question=pending.question)
         return MessageResponse(status="fallback", question="I couldn't understand that clearly. Please say what happened and how much.")
 
+    if pending and extracted.amount_ngn is not None:
+        # The trader answered our own question; the answer completes the held entry.
+        extracted = extracted.model_copy(update={"confidence": max(extracted.confidence, 0.6)})
     source_text = pending.partial_entry.get("raw_text", text) if pending else text
     partial = {**extracted.model_dump(mode="json"), "raw_text": source_text}
 
