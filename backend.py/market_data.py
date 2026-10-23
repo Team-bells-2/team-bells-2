@@ -16,7 +16,7 @@ MARKETS: dict[str, dict[str, Any]] = {
         "name": "Mile 12 Market",
         "area": "Ketu, Lagos",
         "data_status": "synthetic_demo",
-        "source_name": "MerchantPal demo data",
+        "source_name": "OJA demo data",
         "source_url": None,
         "observed_at": None,
     },

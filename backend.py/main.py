@@ -125,7 +125,7 @@ def create_app(
 		if "cost_of_goods_ngn" not in entry_columns:
 			connection.execute("ALTER TABLE entries ADD COLUMN cost_of_goods_ngn INTEGER")
 
-	app = FastAPI(title="MerchantPal API", version="0.2.0")
+	app = FastAPI(title="OJA Prototype API", version="0.2.0")
 	extractor = message_extractor or extract_message
 	transcriber = audio_transcriber or transcribe_audio
 	get_forecasts = weather_fetcher or fetch_lagos_market_forecasts

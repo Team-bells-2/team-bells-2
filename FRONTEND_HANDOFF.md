@@ -64,4 +64,4 @@ The old `backend.py/` prototype has ArketData price comparisons, user-submitted 
 
 ## Agent Action Log
 
-- 2026-10-23: Handoff aligned to OJA and `final-prd.md`; old MerchantPal API is identified as a separate legacy prototype.
+- 2026-10-23: Handoff aligned to OJA and `final-prd.md`; old prototype API is identified as a separate legacy prototype.

@@ -38,9 +38,9 @@ PYTHONPATH=server python eval/run_eval.py --adapter app.ai.index:extract_message
 - OpenAI API (`OJA_MODEL`, `OJA_STT_MODEL`) for extraction, name matching, intent routing, restock reason wording and speech-to-text.
 - AI coding assistants: Claude Code (Anthropic). Team members add any others they used.
 
-## Legacy MerchantPal Prototype
+## Legacy Prototype
 
-`backend.py/`, `eval/`, `requirements.txt`, `requirements-whisper.txt`, and `render.yaml` are the earlier MerchantPal prototype. They are retained for reference and are not the OJA API contract. The existing Render service may still point at this prototype until deployment configuration is deliberately moved to the new `server/` application.
+`backend.py/`, `eval/`, `requirements.txt`, `requirements-whisper.txt`, and `render.yaml` are the earlier OJA prototype. They are retained for reference and are not the OJA API contract. The existing Render service may still point at this prototype until deployment configuration is deliberately moved to the new `server/` application.
 
 The prototype can be run from the repository root:
 

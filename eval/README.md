@@ -1,6 +1,6 @@
 # Message Evaluation Set
 
-This is a small golden test set for MerchantPal's message extractor. It is **not training data** and adding more examples does not teach an AI model Pidgin. The AI model/prompt performs the interpretation; these cases check whether it understood each phrase and expose exact failures.
+This is a small golden test set for OJA's message extractor. It is **not training data** and adding more examples does not teach an AI model Pidgin. The AI model/prompt performs the interpretation; these cases check whether it understood each phrase and expose exact failures.
 
 The 12 cases cover Pidgin and English, naira shorthand, fractional quantities, market units, sales, credit, expenses, payments, stock-in, customer aliases, ambiguous names, missing information, and corrections with prior-entry context. Expected values check only the important fields, so the extractor can phrase clarification questions naturally while still being required to ask a non-empty question.
 

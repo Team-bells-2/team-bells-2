@@ -136,7 +136,7 @@ def print_report(cases: list[dict[str, Any]], results: list[dict[str, Any]]) -> 
 
 
 def main() -> int:
-	parser = argparse.ArgumentParser(description="Evaluate MerchantPal message extraction against a small golden test set.")
+	parser = argparse.ArgumentParser(description="Evaluate OJA message extraction against a small golden test set.")
 	parser.add_argument("--cases", type=Path, default=DEFAULT_CASES, help="Path to the JSON evaluation set")
 	parser.add_argument("--adapter", help="Extractor callable as module:function")
 	parser.add_argument("--validate-only", action="store_true", help="Validate cases and coverage without running an extractor")

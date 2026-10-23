@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: merchantpal-api
+    name: oja-api
     runtime: python
     plan: starter
     buildCommand: pip install -r requirements.txt
@@ -10,12 +10,12 @@ services:
       - key: PYTHON_VERSION
         value: 3.12.8
       - key: SABIMARKET_DB_PATH
-        value: /var/data/merchantpal.sqlite3
+        value: /var/data/oja.sqlite3
       - key: WHISPER_CACHE_DIR
         value: /var/data/whisper-models
       - key: OPENAI_API_KEY
         sync: false
     disk:
-      name: merchantpal-data
+      name: oja-data
       mountPath: /var/data
       sizeGB: 1
