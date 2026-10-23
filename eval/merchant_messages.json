@@ -1,0 +1,218 @@
+[
+  {
+    "id": "credit-sale-pidgin-ten-k",
+    "category": "credit_sale",
+    "language": "pidgin",
+    "text": "I give Mama Ngozi 2 bags rice on credit, na 60k. She go pay Friday.",
+    "context": {},
+    "expected": {
+      "status": "recorded",
+      "entry": {
+        "type": "credit_sale",
+        "item": "rice",
+        "quantity": 2,
+        "unit": "bags",
+        "amount_ngn": 60000,
+        "customer": "Mama Ngozi"
+      }
+    }
+  },
+  {
+    "id": "cash-sale-english-naira",
+    "category": "sale",
+    "language": "english",
+    "text": "I sold 3 bottles of palm oil for ₦7,500 cash.",
+    "context": {},
+    "expected": {
+      "status": "recorded",
+      "entry": {
+        "type": "sale",
+        "item": "palm oil",
+        "quantity": 3,
+        "unit": "bottles",
+        "amount_ngn": 7500
+      }
+    }
+  },
+  {
+    "id": "fractional-market-unit",
+    "category": "sale",
+    "language": "pidgin",
+    "text": "I sell half measure garri for 1.2k.",
+    "context": {},
+    "expected": {
+      "status": "recorded",
+      "entry": {
+        "type": "sale",
+        "item": "garri",
+        "quantity": 0.5,
+        "unit": "measure",
+        "amount_ngn": 1200
+      }
+    }
+  },
+  {
+    "id": "expense-pidgin-transport",
+    "category": "expense",
+    "language": "pidgin",
+    "text": "I spend 2.5k for transport this morning.",
+    "context": {},
+    "expected": {
+      "status": "recorded",
+      "entry": {
+        "type": "expense",
+        "amount_ngn": 2500
+      }
+    }
+  },
+  {
+    "id": "payment-from-customer",
+    "category": "payment",
+    "language": "pidgin",
+    "text": "Chidi don pay me 10k for the beans wey I sell am yesterday.",
+    "context": {},
+    "expected": {
+      "status": "recorded",
+      "entry": {
+        "type": "payment_received",
+        "amount_ngn": 10000,
+        "customer": "Chidi"
+      }
+    }
+  },
+  {
+    "id": "inventory-stock-in",
+    "category": "stock_in",
+    "language": "english",
+    "text": "I bought 4 bags of beans at 45k per bag.",
+    "context": {},
+    "expected": {
+      "status": "recorded",
+      "action": {
+        "type": "stock_in",
+        "item": "beans",
+        "quantity": 4,
+        "unit": "bags",
+        "unit_cost_ngn": 45000
+      }
+    }
+  },
+  {
+    "id": "english-credit-sale-k-shorthand",
+    "category": "credit_sale",
+    "language": "english",
+    "text": "Put two bags of rice on Ngozi's account for 10k.",
+    "context": {},
+    "expected": {
+      "status": "recorded",
+      "entry": {
+        "type": "credit_sale",
+        "item": "rice",
+        "quantity": 2,
+        "unit": "bags",
+        "amount_ngn": 10000,
+        "customer": "Ngozi"
+      }
+    }
+  },
+  {
+    "id": "known-customer-alias",
+    "category": "customer_alias",
+    "language": "pidgin",
+    "text": "The rice woman don pay 10k.",
+    "context": {
+      "customers": [
+        { "name": "Mama Ngozi", "aliases": ["Ngozi", "the rice woman"] }
+      ]
+    },
+    "expected": {
+      "status": "recorded",
+      "entry": {
+        "type": "payment_received",
+        "amount_ngn": 10000,
+        "customer": "Mama Ngozi"
+      }
+    }
+  },
+  {
+    "id": "ambiguous-customer-asks",
+    "category": "ambiguity",
+    "language": "pidgin",
+    "text": "Ngozi don pay me 5k.",
+    "context": {
+      "customers": [
+        { "name": "Mama Ngozi", "aliases": ["Ngozi"] },
+        { "name": "Ngozi Okafor", "aliases": ["Ngozi"] }
+      ]
+    },
+    "expected": {
+      "status": "needs_clarification",
+      "missing_fields": ["customer"]
+    }
+  },
+  {
+    "id": "credit-sale-missing-amount-asks",
+    "category": "clarification",
+    "language": "pidgin",
+    "text": "I give Mama Ngozi 2 bags rice, she go pay Friday.",
+    "context": {},
+    "expected": {
+      "status": "needs_clarification",
+      "missing_fields": ["amount_ngn"]
+    }
+  },
+  {
+    "id": "correction-quantity-updates-entry",
+    "category": "correction",
+    "language": "pidgin",
+    "text": "No be 2 bags, na 4 bags.",
+    "context": {
+      "last_entry": {
+        "type": "credit_sale",
+        "item": "rice",
+        "quantity": 2,
+        "unit": "bags",
+        "amount_ngn": 60000,
+        "customer": "Mama Ngozi"
+      }
+    },
+    "expected": {
+      "status": "corrected",
+      "entry": {
+        "type": "credit_sale",
+        "item": "rice",
+        "quantity": 4,
+        "unit": "bags",
+        "amount_ngn": 60000,
+        "customer": "Mama Ngozi"
+      }
+    }
+  },
+  {
+    "id": "correction-amount-updates-entry",
+    "category": "correction",
+    "language": "english",
+    "text": "Actually, the amount was 55k, not 60k.",
+    "context": {
+      "last_entry": {
+        "type": "credit_sale",
+        "item": "rice",
+        "quantity": 2,
+        "unit": "bags",
+        "amount_ngn": 60000,
+        "customer": "Mama Ngozi"
+      }
+    },
+    "expected": {
+      "status": "corrected",
+      "entry": {
+        "type": "credit_sale",
+        "item": "rice",
+        "quantity": 2,
+        "unit": "bags",
+        "amount_ngn": 55000,
+        "customer": "Mama Ngozi"
+      }
+    }
+  }
+]
