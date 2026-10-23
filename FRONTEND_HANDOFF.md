@@ -1,170 +1,59 @@
-# MerchantPal: Frontend Handoff
+# OJA: Frontend Handoff
 
-This is the frontend contract for the MerchantPal MVP. The FastAPI backend currently supports conversational text capture through a configured AI provider, structured business records, customer balances, inventory, and basic reporting. Voice transcription and lender-agent consent are future work.
+Contract for the Flutter app and the judges' dashboard. The source of truth is [final-prd.md](final-prd.md) (sections 4, 7 and 8). **Status: planned.** The OJA backend in `server/` has no endpoints yet. The old MerchantPal routes (`/inventory/stock-in`, `/reports/profit`, `/insights`, `conversation_id`, no auth) are legacy and must not be used.
 
-## Product loop
+## Rules for the client
 
-A merchant records a sale, expense, payment, or stock-in. MerchantPal stores the record and calculates customer balances, stock on hand, and estimated profit from saved data. The database is the source of truth; do not derive authoritative totals in the UI or present incomplete profit as final.
+- The database is the source of truth. Never compute totals, debts, profit, stock or supplier rankings in the UI.
+- Keep calls behind one small API client. The base URL is a config value so a phone can reach the laptop on the local network.
+- JSON uses `snake_case`; amounts are NGN numbers formatted in the UI. Timestamps are ISO 8601.
+- Errors share one shape: `{ "error": { "code": "...", "message": "..." } }`. Show failures as retryable, never as success.
+- Trader endpoints need the session token from onboarding (`Authorization: Bearer <token>`). Store it on the device. A 401 sends the user back to onboarding.
+- Send a client-generated `client_message_id` with each message so retries do not create duplicates.
 
-## MVP screens
+## Planned endpoints
 
-### Business overview and ledger
+| Endpoint | Used by | Auth |
+| --- | --- | --- |
+| `POST /onboarding` | App | None, returns a session token |
+| `GET /profile`, `PATCH /profile` | App | Session token |
+| `POST /messages` (text or voice file) | App | Session token |
+| `GET /entries` (filter by period and type, paged) | App, dashboard | Session token (app) |
+| `GET /customers` | App, dashboard | Session token (app) |
+| `POST /ask` | App | Session token |
+| `GET /home?period=today\|7d\|30d` | App | Session token |
+| `GET /inventory`, `POST /inventory` | App | Session token |
+| `PATCH /inventory/{id}`, `POST /inventory/{id}/stock` | App | Session token |
+| `GET /suggestions?item=&quantity=` | App | Session token |
+| `GET /access-requests?status=pending` | App | Session token |
+| `POST /access-requests/{id}/approve` | App | Session token |
+| `DELETE /access/{id}` | App | Session token |
+| `POST /access-requests` | Lender agent | None |
+| `GET /agent/summary` | Lender agent | Scoped bearer token |
+| `GET /health` | CI | None |
 
-- Show sales, expenses, estimated profit, and the reporting period.
-- List recent records newest first, with type, item, quantity/unit, amount, customer when relevant, due date, and recorded time.
-- Clearly flag incomplete profit data when any sale has no known cost of goods.
-- Provide loading, empty, and error states. Keep API failures distinct from empty data.
+Request and response shapes are frozen at the end of Sprint 0 and will be added here once they are. Until then, treat field names as provisional.
 
-### Customers and balances
+## Screens
 
-- Show customer name, current amount owed, and count of open credit sales.
-- Use the backend balance; payments affect it only after the payment entry is saved.
+Bottom navigation: Home, Assistant, Inventory, Profile.
 
-### Inventory
+- **Onboarding:** name, phone, business name, sector, market or area, main items with optional opening stock. One short step at a time, validated before submit.
+- **Home:** profit and loss card (revenue, expenses, profit) with a today / 7 days / 30 days selector, total owed, "Items logged" newest first, and a restock suggestion card for low-stock items. Updates within 3 seconds of a new entry. Item detail shows `raw_text`.
+- **Assistant:** type or record a voice note, send to `POST /messages`, show the one-line confirmation or clarifying question. Show a processing state for voice and a clear message when the backend or transcription is down.
+- **Inventory:** items with quantity, unit, unit cost and low-stock highlight. Add or edit items, add opening stock, restock or adjust. "Where to restock" opens suggestions.
+- **Profile:** edit name, business name, sector and location. List connected agents with scope, expiry and a Revoke button. Show the consent prompt (Approve or Reject) when a pending access request appears (poll).
+- **Restock suggestions:** up to 3 suppliers with distance, unit price, rating, quality, quantity available and reason. Label them "Demo data".
 
-- Show item, unit, quantity on hand, weighted average unit cost, and reorder level.
-- Surface low-stock items from `/insights` or by comparing quantity against reorder level.
-- Stock-in and tracked-item sales affect inventory on the backend. Do not optimistically calculate a second authoritative stock value in the UI.
+## Dashboard (judges)
 
-### Conversational capture
+Entries newest first with `raw_text`, customers with balances and overdue flags, access requests with approved scopes, revocation status and access log. Updates within 3 seconds without a manual refresh. Demo controls: Reset and Seed.
 
-The AI layer accepts merchant text and returns a saved entry, a clarification, or a correction. Voice transcription is not implemented; transcribe audio in the client before sending it to `/messages`.
+## Agent action log
 
-## API conventions
+Agents working in this repo log their actions here.
 
-- Configure the base URL, for example `http://localhost:8000`.
-- JSON uses `snake_case`; NGN amounts are numbers. Format them for display in the frontend.
-- Timestamps are ISO 8601. Due dates can currently be free-text values.
-- There is no authentication or multi-merchant identity in the current demo backend.
-- Routes below return JSON arrays for list resources, not object wrappers.
-
-## Implemented endpoints
-
-### `POST /messages`
-
-Requires `OPENAI_API_KEY` on the backend. Send merchant text and a stable `conversation_id` so clarification and correction context remain isolated to the chat.
-
-```json
-{
-  "text": "I give Mama Ngozi two bags rice on credit for 60k. She go pay Friday.",
-  "conversation_id": "telegram-chat-123"
-}
-```
-
-The response uses `status: "recorded"` with an `entry` or `action`, `status: "needs_clarification"` with `missing_fields` and `question`, or `status: "corrected"` with the updated entry. A correction updates the latest entry for that conversation rather than creating a duplicate. Provider failures return an error and should be shown as retryable, never as success.
-
-### `GET /health`
-
-```json
-{ "status": "ok" }
-```
-
-### `POST /entries`
-
-Creates a structured record and returns it with HTTP 201. Required: `type`, `amount_ngn`. `credit_sale` and `payment_received` also require `customer`. `type` is one of `sale`, `credit_sale`, `payment_received`, or `expense`.
-
-Optional fields: `item`, `quantity`, `unit`, `customer`, `due_date`, `confidence`, and `raw_text`. The response adds `id`, `created_at`, and `cost_of_goods_ngn`.
-
-```json
-{
-  "type": "sale",
-  "item": "rice",
-  "quantity": 2,
-  "unit": "bags",
-  "amount_ngn": 60000
-}
-```
-
-If `item` matches tracked inventory, `quantity` and `unit` must match the tracked unit. The backend deducts stock and records cost of goods atomically. Insufficient stock returns HTTP 409. Untracked items remain allowed, with unknown cost.
-
-### `GET /entries`
-
-Returns a newest-first JSON array. Optional query parameters: `type`, `limit` (default 50, maximum 200), and `offset` (default 0).
-
-```json
-[
-  {
-    "id": 1,
-    "type": "credit_sale",
-    "item": "rice",
-    "quantity": 2,
-    "unit": "bags",
-    "amount_ngn": 60000,
-    "customer": "Mama Ngozi",
-    "due_date": "Friday",
-    "confidence": null,
-    "raw_text": null,
-    "cost_of_goods_ngn": null,
-    "created_at": "2026-10-23T14:20:00+00:00"
-  }
-]
-```
-
-### `GET /customers`
-
-Returns case-insensitive customer groups with balances calculated from credit sales and payments. `open_credit_sales` is a count, not a list of entry IDs.
-
-```json
-[
-  { "name": "Mama Ngozi", "amount_owed_ngn": 30000, "open_credit_sales": 1 }
-]
-```
-
-### `POST /ask`
-
-Currently supports “Who owes me?” and “Who owes me money?” only. Other questions return HTTP 422 until the AI/query interpretation layer is added.
-
-Request:
-
-```json
-{ "question": "Who owes me?" }
-```
-
-Response:
-
-```json
-{
-  "answer": "Mama Ngozi owes you ₦30,000",
-  "customers": [
-    { "name": "Mama Ngozi", "amount_owed_ngn": 30000, "open_credit_sales": 1 }
-  ]
-}
-```
-
-### `POST /inventory/stock-in`
-
-Adds stock, or adds to an existing item using a weighted average unit cost. Item units must remain consistent.
-
-```json
-{
-  "item": "rice",
-  "quantity": 10,
-  "unit": "bags",
-  "unit_cost_ngn": 20000,
-  "reorder_level": 2
-}
-```
-
-Returns the updated inventory item with HTTP 201.
-
-### `GET /inventory`
-
-Returns an array of items with `id`, `item`, `unit`, `quantity_on_hand`, `unit_cost_ngn`, `reorder_level`, and `updated_at`.
-
-### `GET /reports/profit`
-
-Optional `start_date` and `end_date` query parameters use `YYYY-MM-DD`. Defaults to the latest seven calendar days. Returns `sales_ngn`, `expenses_ngn`, `cost_of_goods_ngn`, `estimated_profit_ngn`, and `uncosted_sales_count`, plus the selected period. Profit is an estimate based on saved records and known stock costs, not audited accounting.
-
-### `GET /insights`
-
-Returns the default-period sales and estimated profit, whether profit is incomplete, the number of uncosted sales, and low-stock items.
-
-## Not implemented yet
-
-- `POST /messages`: conversational extraction, clarification, and corrections.
-- Voice transcription.
-- Natural-language queries beyond “Who owes me?”.
-- Customer alias memory beyond case-insensitive exact-name grouping.
-- Consent requests, lender summaries, and access revocation.
-
-Keep calls behind a small API client so future features can be added without coupling screen components to transport details.
+- 2026-10-23: Rewrote README.md and this file for OJA. They described the old MerchantPal prototype (SQLite, `conversation_id`, no auth, `/reports/profit`).
+  - Assumed the endpoint list and screens from final-prd.md sections 4 and 8. Field-level request and response shapes are not documented because the contract is not frozen.
+  - Assumed "log your actions into FRONTEND_HANDOFF.md" meant this file. Earlier actions are in DANIEL_AGENT-ACTIONS.txt.
+  - Not changed: `render.yaml`, `requirements.txt`, `backend.py/`, `eval/` (still MerchantPal).

@@ -1,54 +1,64 @@
-# MerchantPal
+# OJA
 
-## Backend
+Speak or type in Pidgin or English, and your books write themselves. OJA is a Flutter app for Lagos foodstuff traders (rice, beans, garri, oil) with a FastAPI backend. Built for T.I.C Hackathon 3.0.
 
-The FastAPI backend uses SQLite for merchant records, inventory, and reports. From the project root:
+Design rule: the AI only interprets messages and phrases explanations. Totals, debts, profit, stock levels and supplier rankings always come from the database and code.
+
+Full requirements: [final-prd.md](final-prd.md). Agent rules: [AGENTS.md](AGENTS.md). Client contract: [FRONTEND_HANDOFF.md](FRONTEND_HANDOFF.md).
+
+## Status
+
+The new backend in `server/` is being built. Only the database boilerplate exists so far (SQLAlchemy base, engine and session). The feature folders are empty placeholders. No endpoint is implemented in `server/` yet.
+
+`backend.py/`, `eval/` and `render.yaml` are the earlier MerchantPal prototype (SQLite, single merchant). They are legacy and will be replaced or removed as the OJA slices land.
+
+## Stack
+
+- Backend: Python 3.12+, FastAPI, SQLAlchemy 2, Alembic, PostgreSQL.
+- Client: Flutter (Android), in `client/`. Not started.
+- Dashboard for judges: plain HTML. Not started.
+
+The PRD (decision D2) still says SQLite. The team chose PostgreSQL, so the PRD needs updating.
+
+## Backend layout (vertical slices)
+
+Each feature is a folder under `server/app/` with an `index.py` entry point.
+
+| Folder | Covers |
+| --- | --- |
+| `ledger` | `/messages`, `/entries`, clarifications, corrections, shorthand, dedupe |
+| `ai` | Extraction, matching, intent routing, wording, LLM and speech wrapper |
+| `customers` | Customers, aliases, debts, `/customers` |
+| `ask` | `/ask` intent whitelist and parameterised queries |
+| `consent` | Access requests, approve and revoke, `/agent/summary`, access log |
+| `onboarding` | `/onboarding` and session tokens |
+| `profile` | `/profile` |
+| `inventory` | Items and stock movements |
+| `home` | `/home` profit and loss |
+| `suggestions` | Supplier data, ranking, `/suggestions` |
+| `demo` | Seed and reset |
+| `shared` | `env.py` settings and `Infrastructure/` (`db`, `llm`, `SST`) |
+
+## Setup
+
+Dependencies are managed with Poetry (`pyproject.toml`).
 
 ```sh
-python -m pip install -r requirements.txt
-cp .env.example .env
-# Open .env and replace the empty OPENAI_API_KEY value with your provider key
-uvicorn main:app --app-dir backend.py --reload
+poetry install
+cp .env.example .env   # then fill in real values
 ```
 
-The API is available at `http://127.0.0.1:8000`; interactive endpoint docs are at `/docs`. Put your key in the root `.env` file under `OPENAI_API_KEY`. The app loads it when it starts. Never commit `.env` or share the key in chat. `OPENAI_BASE_URL` can point to an OpenAI-compatible provider, and `MERCHANTPAL_MODEL` selects the model (default `gpt-4o-mini`). Set `SABIMARKET_DB_PATH` to choose a different SQLite file.
+Settings are read from the root `.env` by `server/app/shared/env.py`. Nothing is hardcoded in code, and a missing value fails at startup.
 
-### Current endpoints
+| Variable | Meaning |
+| --- | --- |
+| `DATABASE_URL` | SQLAlchemy URL, for example `postgresql+psycopg://user:password@localhost:5432/oja` |
+| `DB_ECHO` | `true` logs SQL |
+| `DB_POOL_SIZE` | Connection pool size |
+| `DB_MAX_OVERFLOW` | Extra connections beyond the pool |
 
-- `GET /health`: process health check.
-- `POST /messages`: interprets merchant text with the configured model, asks clarification when needed, saves extracted records, and applies corrections to the latest entry in that conversation. Send a stable `conversation_id` per merchant/chat.
-- `POST /entries` and `GET /entries`: create and list sales, credit sales, payments, and expenses. Listing supports `type`, `limit`, and `offset` query parameters.
-- `GET /customers`: customer balances calculated from credit sales and recorded payments.
-- `POST /ask`: answers the deterministic “Who owes me?” query from saved records. Other natural-language questions are not implemented yet.
-- `POST /inventory/stock-in`: add stock and unit cost; repeated stock-ins update the weighted average unit cost.
-- `GET /inventory`: list stock on hand and reorder levels.
-- `GET /reports/profit`: summarize sales, expenses, and known cost of goods for a date range (`start_date` and `end_date`, both `YYYY-MM-DD`). Defaults to the last seven days.
-- `GET /insights`: returns the default-period business summary and items at or below their reorder level.
+LLM variables (`OPENAI_API_KEY`, `OPENAI_BASE_URL`, `MERCHANTPAL_MODEL`) are in `.env.example` for the AI slice. Never commit `.env`.
 
-Sales for a tracked item deduct inventory and capture cost of goods in the same database transaction. Sales for untracked items are allowed, but profit reports count them as uncosted and flag that estimated profit is incomplete. Profit is an estimate based on recorded entries and stock costs, not a replacement for verified accounting.
+## Working agreement
 
-Voice transcription and access-consent routes are not implemented yet. `/messages` accepts text; transcribe voice messages in the client before sending them.
-
-## Message evaluation
-
-`eval/merchant_messages.json` contains 12 representative Pidgin and English cases for the extractor. These examples do not train the AI; they check its output and report exact field-level failures. Validate the set with:
-
-```sh
-python eval/run_eval.py --validate-only
-```
-
-Run the evaluation against the configured model with `python eval/run_eval.py --adapter ai_extractor:extract_message`. This makes provider calls and requires `OPENAI_API_KEY`. Grow the set using phrases and edge cases gathered from real merchants, not just synthetic variations.
-
-Run the backend checks with:
-
-```sh
-python -m unittest discover -s backend.py -p 'test_*.py'
-```
-
-## Deploy to Render
-
-The repository includes a `render.yaml` Blueprint for the FastAPI API. Push the project to GitHub, create a new Blueprint in Render, and select this repository. During Blueprint setup, enter `OPENAI_API_KEY` when Render prompts for the secret; do not put the key in `render.yaml` or GitHub.
-
-The Blueprint mounts a persistent disk at `/var/data` for SQLite. Render persistent disks require a paid service plan. If using a free instance instead, move persistence to a managed PostgreSQL database before relying on stored merchant records, because the instance filesystem is not durable across deploys.
-
-After deployment, check `https://<your-render-service>.onrender.com/health`; API docs are at `/docs` on the same host.
+Small commits (10 files max), one branch per task, never work on `main`, no new dependencies without asking. See [AGENTS.md](AGENTS.md).
