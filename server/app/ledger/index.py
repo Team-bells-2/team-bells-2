@@ -27,6 +27,7 @@ from app.shared.Infrastructure.llm.index import (
 )
 from app.shared.Infrastructure.SST.index import transcribe
 from app.shared.auth import get_current_trader
+from app.shared.realtime import publish
 
 router = APIRouter(tags=["ledger"])
 logger = logging.getLogger("oja.messages")
@@ -358,6 +359,8 @@ def process_message(payload: MessageRequest, trader: Trader = Depends(get_curren
     if response.status != "fallback":
         db.add(ProcessedMessage(trader_id=trader.id, client_message_id=payload.client_message_id, response_payload=response.model_dump(mode="json")))
     db.commit()
+    if response.status == "saved" and response.entry:
+        publish(trader.id, "entry_updated" if response.updated else "entry_saved", response.entry)
     logger.info(
         "message trader=%s status=%s input=%r entry=%s confidence=%s latency_ms=%d",
         trader.id, response.status, text, response.entry.id if response.entry else None,

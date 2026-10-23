@@ -9,6 +9,7 @@ from app.inventory.schemas import InventoryCreate, InventoryItemResponse, Invent
 from app.onboarding.models import Trader
 from app.shared.Infrastructure.db.session import get_db
 from app.shared.auth import get_current_trader
+from app.shared.realtime import publish
 
 router = APIRouter(prefix="/inventory", tags=["inventory"])
 
@@ -38,7 +39,9 @@ def create_inventory_item(payload: InventoryCreate, trader: Trader = Depends(get
     db.add(item)
     db.commit()
     db.refresh(item)
-    return _to_response(db, item)
+    response = _to_response(db, item)
+    publish(trader.id, "inventory_changed", response)
+    return response
 
 
 @router.patch("/{item_id}")
@@ -50,7 +53,9 @@ def update_inventory_item(item_id: int, payload: InventoryUpdate, trader: Trader
         setattr(item, field, value.strip() if isinstance(value, str) else value)
     db.commit()
     db.refresh(item)
-    return _to_response(db, item)
+    response = _to_response(db, item)
+    publish(trader.id, "inventory_changed", response)
+    return response
 
 
 @router.post("/{item_id}/stock", status_code=201)
@@ -68,4 +73,6 @@ def add_stock_movement(item_id: int, payload: StockMovementCreate, trader: Trade
     db.add(StockMovement(inventory_item_id=item.id, **payload.model_dump()))
     db.commit()
     db.refresh(item)
-    return _to_response(db, item)
+    response = _to_response(db, item)
+    publish(trader.id, "inventory_changed", response)
+    return response

@@ -79,13 +79,30 @@ async function api(path, options = {}, auth = token) {
   if (!response.ok) throw Object.assign(new Error(body?.error?.message || response.statusText), { status: response.status, body });
   return body;
 }
-function saveToken() { token = $("token").value.trim(); store.set("oja_token", token); seenEntry = 0; refresh(); }
+function saveToken() { token = $("token").value.trim(); store.set("oja_token", token); seenEntry = 0; connectSocket(); refresh(); }
+
+// Real-time: the server pushes an event whenever something changes; we then refetch.
+let socket = null, socketLive = false;
+function connectSocket() {
+  if (socket) { socket.onclose = null; socket.close(); socket = null; }
+  socketLive = false;
+  if (!token) return;
+  socket = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws?token=${encodeURIComponent(token)}`);
+  socket.onopen = () => { socketLive = true; };
+  socket.onmessage = (event) => {
+    const message = JSON.parse(event.data);
+    if (message.type === "access_requested") { $("status").textContent = "New access request: " + message.data.prompt; setTimeout(() => { $("status").textContent = ""; }, 8000); }
+    if (message.type !== "pong") refresh();
+  };
+  socket.onclose = (event) => { socketLive = false; if (event.code !== 4401) setTimeout(connectSocket, 3000); };
+}
+setInterval(() => { if (socket && socketLive) socket.send("ping"); }, 25000);
 async function demo(action) {
   try {
     const result = await api("/demo/" + action, { method: "POST" }, null);
     if (action === "seed") { $("token").value = result.session_token; $("agentPhone").value = result.phone; store.set("oja_phone", result.phone); saveToken(); }
-    else { token = ""; $("token").value = ""; store.set("oja_token", ""); agent = null; store.set("oja_agent", "null"); }
-    $("status").textContent = action === "seed" ? "Demo trader seeded: " + result.phone : "Demo data reset.";
+    else { token = ""; connectSocket(); $("token").value = ""; store.set("oja_token", ""); agent = null; store.set("oja_agent", "null"); }
+    $("status").textContent = action === "seed" ? `Demo trader seeded: phone ${result.phone}, PIN ${result.pin}` : "Demo data reset.";
     refresh();
   } catch (e) { $("status").textContent = "Demo control failed: " + e.message; }
 }
@@ -99,7 +116,7 @@ async function refresh() {
     seenEntry = newest;
     $("customers").innerHTML = customers.map((c) => `<tr><td>${esc(c.name)}</td><td class="muted">${esc(c.aliases.join(", "))}</td><td>${c.amount_owed_ngn ? `<b>${naira(c.amount_owed_ngn)}</b>` : "—"} ${c.overdue ? '<span class="pill overdue">overdue</span>' : ""}</td></tr>`).join("") || `<tr><td colspan="3" class="muted">No customers yet.</td></tr>`;
     $("access").innerHTML = access.map((r) => `<div style="margin-bottom:12px"><div class="row"><b>${esc(r.agent_name)}</b><span class="pill ${r.status}">${r.status}</span><span class="muted">${esc(r.scopes.join(", "))}${r.expires_at ? " · expires " + new Date(r.expires_at).toLocaleString() : ""}</span></div><div class="muted">${esc(r.purpose)}</div>${r.status === "pending" ? `<div class="row"><button class="primary" onclick="decide(${r.id}, true)">Approve as trader</button><button onclick="decide(${r.id}, false)">Reject</button></div>` : ""}${r.status === "approved" ? `<div class="row"><button onclick="revoke(${r.id})">Revoke as trader</button></div>` : ""}<table><tbody>${r.log.map((l) => `<tr><td class="muted">${new Date(l.at).toLocaleTimeString()}</td><td>${esc(l.endpoint)}</td><td><span class="pill ${l.result}">${esc(l.result)}</span></td></tr>`).join("")}</tbody></table></div>`).join("") || "No requests yet.";
-    $("status").textContent = "Live · updated " + new Date().toLocaleTimeString();
+    if (!$("status").textContent.startsWith("New access request")) $("status").textContent = (socketLive ? "Live (WebSocket)" : "Live (polling)") + " · updated " + new Date().toLocaleTimeString();
   } catch (e) { $("status").textContent = e.status === 401 ? "Token rejected. Seed demo data or paste a new token." : "Backend unreachable: " + e.message; }
 }
 async function decide(id, approve) { await api(`/access-requests/${id}/approve`, { method: "POST", body: JSON.stringify({ approve }) }); refresh(); }
@@ -142,8 +159,9 @@ async function askQ() {
   catch (e) { $("chat").insertAdjacentHTML("afterbegin", `<div class="error">${esc(e.message)}</div>`); }
 }
 $("msg").addEventListener("keydown", (e) => { if (e.key === "Enter") send(); });
-refresh(); agentTick();
-setInterval(refresh, 2000); setInterval(agentTick, 3000);
+connectSocket(); refresh(); agentTick();
+// Polling stays as a safety net when the socket is down.
+setInterval(() => { if (!socketLive) refresh(); }, 2000); setInterval(refresh, 10000); setInterval(agentTick, 3000);
 </script>
 </body>
 </html>

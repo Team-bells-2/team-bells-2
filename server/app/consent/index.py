@@ -18,6 +18,7 @@ from app.onboarding.models import Trader
 from app.shared.Infrastructure.db.session import get_db
 from app.shared.auth import get_current_trader
 from app.shared.env import settings
+from app.shared.realtime import publish
 
 router = APIRouter(tags=["consent"])
 agent_bearer = HTTPBearer(auto_error=False)
@@ -33,6 +34,10 @@ def _hash(secret: str) -> str:
 def _aware(moment: datetime | None) -> datetime | None:
     # SQLite returns naive datetimes; everything is stored in UTC.
     return moment.replace(tzinfo=UTC) if moment is not None and moment.tzinfo is None else moment
+
+
+def _prompt(request: AccessRequest) -> str:
+    return f"{request.agent_name} wants to see your {', '.join(scope.replace('_', ' ') for scope in request.scopes)} for {SUMMARY_PERIOD_DAYS} days. Approve?"
 
 
 def _error(status_code: int, code: str, message: str) -> HTTPException:
@@ -81,6 +86,10 @@ def create_access_request(payload: AccessRequestCreate, db: Session = Depends(ge
     db.flush()
     db.add(AccessLog(request_id=request.id, endpoint="POST /access-requests", result="requested"))
     db.commit()
+    publish(trader.id, "access_requested", {
+        "id": request.id, "agent_name": request.agent_name, "purpose": request.purpose, "scopes": request.scopes,
+        "prompt": _prompt(request),
+    })
     return {"request_id": request.id, "status": "pending", "claim_secret": claim_secret}
 
 
@@ -98,6 +107,7 @@ def access_request_status(request_id: int, x_claim_secret: str = Header(min_leng
             db.add(AccessToken(request_id=request.id, token_hash=_hash(token), expires_at=request.expires_at))
             db.add(AccessLog(request_id=request.id, endpoint="GET /access-requests/{id}/status", result="token_issued"))
             db.commit()
+            publish(request.trader_id, "access_log", {"request_id": request.id, "result": "token_issued"})
             response.update({"access_token": token, "token_type": "bearer", "expires_at": _aware(request.expires_at)})
         else:
             response.update({"token_already_collected": True, "expires_at": _aware(issued.expires_at)})
@@ -121,7 +131,7 @@ def list_access_requests(
             "id": request.id, "agent_name": request.agent_name, "purpose": request.purpose, "scopes": request.scopes,
             "status": request.status, "requested_at": _aware(request.requested_at), "decided_at": _aware(request.decided_at),
             "expires_at": _aware(request.expires_at),
-            "prompt": f"{request.agent_name} wants to see your {', '.join(scope.replace('_', ' ') for scope in request.scopes)} for {SUMMARY_PERIOD_DAYS} days. Approve?",
+            "prompt": _prompt(request),
             "log": [{"endpoint": row.endpoint, "result": row.result, "at": _aware(row.at)} for row in log],
         })
     return result
@@ -141,6 +151,7 @@ def decide_access_request(request_id: int, payload: Decision, trader: Trader = D
         request.expires_at = now + timedelta(minutes=settings.ACCESS_TOKEN_TTL_MINUTES)
     db.add(AccessLog(request_id=request.id, endpoint="POST /access-requests/{id}/approve", result=request.status))
     db.commit()
+    publish(trader.id, "access_decided", {"id": request.id, "status": request.status, "expires_at": _aware(request.expires_at)})
     return {"id": request.id, "status": request.status, "expires_at": _aware(request.expires_at)}
 
 
@@ -156,6 +167,7 @@ def revoke_access(request_id: int, trader: Trader = Depends(get_current_trader),
         token.revoked_at = now
     db.add(AccessLog(request_id=request.id, endpoint="DELETE /access/{id}", result="revoked"))
     db.commit()
+    publish(trader.id, "access_revoked", {"id": request.id})
     return {"id": request.id, "status": "revoked"}
 
 
@@ -176,10 +188,12 @@ def agent_summary(credentials: HTTPAuthorizationCredentials | None = Depends(age
     if token.revoked_at is not None or request.status == "revoked":
         db.add(AccessLog(request_id=request.id, endpoint=endpoint, result="revoked"))
         db.commit()
+        publish(request.trader_id, "access_log", {"request_id": request.id, "result": "revoked"})
         raise _error(403, "revoked", "The trader revoked this access.")
     if _aware(token.expires_at) <= now:
         db.add(AccessLog(request_id=request.id, endpoint=endpoint, result="expired"))
         db.commit()
+        publish(request.trader_id, "access_log", {"request_id": request.id, "result": "expired"})
         raise _error(401, "expired", "This access token has expired.")
 
     since = now - timedelta(days=SUMMARY_PERIOD_DAYS)
@@ -195,4 +209,5 @@ def agent_summary(credentials: HTTPAuthorizationCredentials | None = Depends(age
         summary.total_owed_ngn = sum(balance for _, balance, _ in customer_balances(db, request.trader_id) if balance > 0)
     db.add(AccessLog(request_id=request.id, endpoint=endpoint, result="ok"))
     db.commit()
+    publish(request.trader_id, "access_log", {"request_id": request.id, "result": "ok"})
     return summary
