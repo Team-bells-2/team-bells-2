@@ -25,6 +25,8 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000
 
 Open `http://localhost:8000/dashboard`. With `DEMO_CONTROLS_ENABLED=true`, "Seed demo data" creates the demo trader (phone `08030000001`, Mama Ngozi and other customers with nicknames, starting stock) and puts its session token on the dashboard. The dashboard also has a lender agent screen and a trader console that stands in for the app.
 
+Tables are created on startup but never altered. After pulling a change to the data model, delete the SQLite file (or reset the PostgreSQL database) and seed again.
+
 Offline demo: set `DEMO_MODE=true` to skip every provider call. Extraction then uses the rule-based fallback, which also takes over automatically when the LLM call fails.
 
 Evaluation (FR-S18), from the repository root:

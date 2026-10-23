@@ -11,6 +11,37 @@ This contract follows [final-prd.md](final-prd.md), especially Sections 4, 7, an
 - **Approve or reject** from the app: `POST /access-requests/{id}/approve` with `{"approve": true|false}`. `GET /access-requests` items include a ready-made `prompt` string and the access `log`.
 - **Home** includes `recent_entries` and, for each low-stock item, `top_suggestion`.
 
+## Accounts: sign-up and login
+
+Phone number plus a 4 to 6 digit PIN. Every auth call returns `{trader_id, session_token, token_type, expires_at}`; send the token as `Authorization: Bearer <token>`.
+
+| Endpoint | Body | Notes |
+| --- | --- | --- |
+| `POST /auth/signup` (same as `POST /onboarding`) | onboarding fields + `pin` | 409 if the phone already exists |
+| `POST /auth/login` | `{phone, pin}` | 401 `invalid_credentials`; after 5 wrong PINs, 429 `account_locked` for 5 minutes |
+| `POST /auth/logout` | none | Ends this device's session only. Returns 204 |
+| `POST /auth/change-pin` | `{current_pin, new_pin}` | Returns 204 |
+
+App flow: no stored token → Login screen with a "Create account" link to onboarding. Any 401 → back to Login. The demo trader is phone `08030000001`, PIN `1234`.
+
+## Real-time updates (WebSocket)
+
+Connect to `ws://<server>/ws?token=<session_token>` after login (use `wss://` behind HTTPS). Actions still use the REST endpoints; the socket only pushes what changed, so screens update without polling. Send the text `ping` every 25 seconds to keep a phone connection alive; the server answers `pong`. A close with code 4401 means the token is invalid: go back to Login. On any other close, reconnect after a few seconds and refetch the screen.
+
+Every message is `{"type": ..., "data": ..., "at": ISO time}`:
+
+| type | data | Refresh |
+| --- | --- | --- |
+| `connected` | `{trader_id}` | |
+| `entry_saved`, `entry_updated` | the entry, as in `GET /entries` | Home, Items logged, Inventory |
+| `inventory_changed` | the item, as in `GET /inventory` | Inventory, Home |
+| `access_requested` | `{id, agent_name, purpose, scopes, prompt}` | Show the Approve / Reject prompt at once (FR-C3) |
+| `access_decided`, `access_revoked` | `{id, status?, expires_at?}` | Profile, connected agents |
+| `access_log` | `{request_id, result}` | Dashboard access log |
+| `profile_updated` | the profile | Profile |
+
+The server runs one process, so start uvicorn with a single worker.
+
 ## Client Rules
 
 - The database is the source of truth. Never compute totals, debts, profit, stock, or supplier rankings in the UI.
