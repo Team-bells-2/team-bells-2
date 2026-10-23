@@ -20,8 +20,15 @@ class Settings(BaseSettings):
     OPENAI_API_KEY: str | None = None
     OPENAI_BASE_URL: str = "https://api.openai.com/v1"
     OJA_MODEL: str = "gpt-5-nano"
-    DEMO_MODE: bool = True
+    OJA_STT_MODEL: str = "whisper-1"
+    LLM_TIMEOUT_SECONDS: float = 15.0
+    # True skips every provider call and uses the rule-based extractor (offline demo, NFR-4).
+    DEMO_MODE: bool = False
+    # Enables POST /demo/reset and /demo/seed. Never enable on a shared deployment.
+    DEMO_CONTROLS_ENABLED: bool = False
     SESSION_TOKEN_TTL_DAYS: int = 30
+    ACCESS_TOKEN_TTL_MINUTES: int = 43200
+    CORS_ORIGINS: list[str] = []
 
 
 settings = Settings()
