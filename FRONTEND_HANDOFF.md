@@ -95,4 +95,25 @@ The old `backend.py/` prototype has ArketData price comparisons, user-submitted 
 
 ## Agent Action Log
 
-- 2026-10-23: Handoff aligned to OJA and `final-prd.md`; old prototype API is identified as a separate legacy prototype.
+- 2026-10-23: Handoff aligned to OJA and `final-prd.md`; old MerchantPal API is identified as a separate legacy prototype.
+- 2026-10-23: First OJA slices implemented in `server/app/` (SQLAlchemy ORM, Postgres): `onboarding` (traders, sessions, new `locations` table), `profile`, `customers`.
+  - Live for the client: `POST /onboarding` (201, returns `token` + `trader`; 409 `phone_taken`; 422 `unknown_location`), `GET`/`PATCH /profile`, `GET /customers` (names only, balances come with the ledger), `GET /health`.
+  - Auth: `Authorization: Bearer <token>`; missing/invalid token returns 401 (`missing_token` / `invalid_token`).
+  - Errors use `{ "error": { "code", "message" } }`, including 422 validation errors.
+  - Not yet: main items/opening stock at onboarding, location list endpoint, customer balances, Alembic migrations, login.
+- 2026-10-23: `customers` slice moved to clean-architecture wiring (no API change): router -> `CustomerOrchestrator` -> `CustomerRepository` -> Session, injected with FastAPI `Depends`.
+- 2026-10-23: `onboarding` and `profile` moved to the same clean-architecture wiring as `customers` (no API change). Added `onboarding/repositories/` (location, trader, session) and `shared/Infrastructure/db/base_repository.py` (commit/rollback/refresh).
+- 2026-10-23: Ledger, inventory (read-only) and home slices added; customers gains aliases and balances. Resolves review reds 4-7 (PRD accounting model, alias-first customer matching, per-trader pending clarification, single-transaction writes).
+  - New for the client: `GET /entries?period=today|7d|30d&type=&limit=&offset=`, `GET /inventory` (derived `quantity_on_hand`, `low_stock`), `GET /home?period=today|7d|30d` (revenue, expenses, profit = revenue - expenses, total owed, items logged, low-stock items).
+  - `GET /customers` now includes `balance_ngn` (derived; negative = overpaid).
+  - Money and quantities are JSON numbers. Periods start at Lagos midnight.
+  - `POST /messages` is not exposed yet; it needs the AI slice. The ledger workflow behind it (save / clarify / complete / correct) is built and tested.
+- 2026-10-23: Reds 8-15 resolved. `POST /messages` is live; `GET /suggestions` added.
+  - `POST /messages` text: JSON `{ "text", "client_message_id" }`. Voice: multipart fields `audio` (file) + `client_message_id`. Generate a new `client_message_id` per message and reuse it on retry: a retry returns the original reply unchanged.
+  - Response: `{ status: saved|corrected|clarify|fallback, message, entry?, flags[], transcript? }`. Show `message` in the chat; `transcript` is set for voice notes.
+  - Audio types: WAV, MP3, M4A, AAC, OGG, WebM, FLAC (max 15 MB). `application/octet-stream` is rejected with 415, so send the real content type.
+  - Errors: 503 `ai_unavailable` (retry later), 502 `transcription_failed` (resend or type), 415 `unsupported_audio`, 413 `audio_too_large`.
+  - `GET /suggestions?item=&quantity=`: up to 3 suppliers (distance_km, unit_price_ngn, average_rating, review_count, quality_grade, quantity_available, can_fill, reason) and `data_label: "Demo data"`. Quantity defaults to the item's reorder quantity; 422 `quantity_required` if there is none.
+  - Old `/markets`, `/markets/reviews` and `/transcribe` routes were not ported.
+- 2026-10-23: Alembic initialised (`alembic.ini` at repo root, scripts in `server/app/shared/Infrastructure/db/alembic`). Initial migration applied to the local Postgres; reference data seeded (8 locations, 6 demo suppliers). Run `alembic upgrade head` from the repo root, then `cd server && python -m app.demo.index`. Item-name matching is an open team question (`server/TODO.txt`).
+- 2026-10-23: Post-merge validation on `wade-latest-23-44` (rebase in progress). Fixed missing `Field` import in `server/app/shared/env.py` (app could not start). Our slices pass all checks on Postgres; the teammate's server code in the slices' `index.py` files, `shared/auth.py`, `shared/realtime.py` and `consent/` is present but not mounted. PRD gap review follows.
