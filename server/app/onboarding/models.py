@@ -19,6 +19,9 @@ class Trader(Base):
     location_name: Mapped[str] = mapped_column(String(120))
     latitude: Mapped[float | None]
     longitude: Mapped[float | None]
+    pin_hash: Mapped[str | None] = mapped_column(String(200))
+    failed_logins: Mapped[int] = mapped_column(default=0)
+    locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
 
 

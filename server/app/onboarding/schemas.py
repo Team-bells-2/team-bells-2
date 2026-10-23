@@ -21,6 +21,17 @@ class OnboardingRequest(BaseModel):
     latitude: float | None = Field(default=None, ge=-90, le=90)
     longitude: float | None = Field(default=None, ge=-180, le=180)
     items: list[OpeningItem] = Field(default_factory=list, max_length=40)
+    pin: str = Field(pattern=r"^\d{4,6}$", description="4 to 6 digits, used with the phone number to log in.")
+
+
+class LoginRequest(BaseModel):
+    phone: str = Field(min_length=7, max_length=32)
+    pin: str = Field(pattern=r"^\d{4,6}$")
+
+
+class ChangePinRequest(BaseModel):
+    current_pin: str = Field(pattern=r"^\d{4,6}$")
+    new_pin: str = Field(pattern=r"^\d{4,6}$")
 
 
 class OnboardingResponse(BaseModel):

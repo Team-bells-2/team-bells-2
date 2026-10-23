@@ -13,7 +13,7 @@ from app.inventory.models import InventoryItem, StockMovement
 from app.ledger.models import Entry, EntryEdit, PendingClarification, ProcessedMessage
 from app.onboarding.models import SessionToken, Trader
 from app.shared.Infrastructure.db.session import get_db
-from app.shared.auth import issue_session_token
+from app.shared.auth import hash_pin, issue_session_token
 from app.shared.env import settings
 from app.suggestions.seed import seed_suppliers
 
@@ -24,6 +24,7 @@ DEMO_TRADER = {
     "name": "Tolu Adeyemi", "phone": "08030000001", "business_name": "Tolu Foodstuff Store",
     "sector": "foodstuff", "location_name": "Mushin Market", "latitude": 6.5336, "longitude": 3.3502,
 }
+DEMO_PIN = "1234"
 # name, unit, unit cost, opening quantity, reorder level, reorder quantity
 DEMO_ITEMS = [
     ("rice", "bag", 58000, 10, 3, 10),
@@ -66,7 +67,7 @@ def seed_demo(db: Session = Depends(get_db)) -> dict:
     seed_suppliers(db)
     trader = db.scalar(select(Trader).where(Trader.phone == DEMO_TRADER["phone"]))
     if trader is None:
-        trader = Trader(**DEMO_TRADER)
+        trader = Trader(**DEMO_TRADER, pin_hash=hash_pin(DEMO_PIN))
         db.add(trader)
         db.flush()
         for name, unit, cost, opening, reorder_level, reorder_quantity in DEMO_ITEMS:
@@ -82,7 +83,7 @@ def seed_demo(db: Session = Depends(get_db)) -> dict:
                 db.add(CustomerAlias(customer_id=customer.id, alias=alias))
     token = issue_session_token(db, trader)
     db.commit()
-    return {"status": "seeded", "trader_id": trader.id, "phone": trader.phone, "session_token": token, "token_type": "bearer"}
+    return {"status": "seeded", "trader_id": trader.id, "phone": trader.phone, "pin": DEMO_PIN, "session_token": token, "token_type": "bearer"}
 
 
 @router.get("/dashboard", response_class=HTMLResponse, include_in_schema=False)
