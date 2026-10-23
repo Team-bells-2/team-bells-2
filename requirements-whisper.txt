@@ -1,0 +1,2 @@
+# Optional local speech transcription only; requires ffmpeg installed on the system.
+openai-whisper>=20240930
