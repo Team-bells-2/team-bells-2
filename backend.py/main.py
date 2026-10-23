@@ -3,91 +3,45 @@ from __future__ import annotations
 import os
 import json
 import sqlite3
+import asyncio
 from contextlib import closing
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
-from typing import Any, Callable, Literal
+from typing import Any, Callable
 
-from fastapi import Depends, FastAPI, HTTPException, Query
-from pydantic import BaseModel, Field, model_validator
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
 
 from ai_extractor import extract_message
+from local_whisper import transcribe_audio
+from market_data import DATA_NOTICE, MARKETS, available_products, recommend_market
+from schemas import (
+	AskRequest,
+	CustomerBalance,
+	Entry,
+	EntryCreate,
+	EntryType,
+	InventoryItem,
+	MarketListResponse,
+	MarketRecommendationRequest,
+	MarketRecommendationResponse,
+	MarketReviewCreate,
+	MarketReviewResponse,
+	MarketReviewsResponse,
+	MessageRequest,
+	ProfitReport,
+	StockInRequest,
+)
+from weather_forecast import OPEN_METEO_ATTRIBUTION, fetch_lagos_market_forecasts
 
 
-EntryType = Literal["sale", "credit_sale", "payment_received", "expense"]
 DEFAULT_DB_PATH = Path(__file__).with_name("sabimarket.sqlite3")
-
-
-class EntryCreate(BaseModel):
-	type: EntryType
-	item: str | None = Field(default=None, min_length=1, max_length=100)
-	quantity: float | None = Field(default=None, gt=0)
-	unit: str | None = Field(default=None, max_length=40)
-	amount_ngn: int = Field(ge=0)
-	customer: str | None = Field(default=None, min_length=1, max_length=120)
-	due_date: str | None = Field(default=None, max_length=80)
-	confidence: float | None = Field(default=None, ge=0, le=1)
-	raw_text: str | None = Field(default=None, max_length=2000)
-
-	@model_validator(mode="after")
-	def require_customer_for_credit(self) -> EntryCreate:
-		if self.type in {"credit_sale", "payment_received"} and not self.customer:
-			raise ValueError(f"customer is required for {self.type}")
-		return self
-
-
-class Entry(EntryCreate):
-	id: int
-	cost_of_goods_ngn: int | None
-	created_at: str
-
-
-class CustomerBalance(BaseModel):
-	name: str
-	amount_owed_ngn: int
-	open_credit_sales: int
-
-
-class AskRequest(BaseModel):
-	question: str = Field(min_length=1, max_length=500)
-
-
-class MessageRequest(BaseModel):
-	text: str = Field(min_length=1, max_length=2000)
-	conversation_id: str = Field(min_length=1, max_length=120)
-
-
-class StockInRequest(BaseModel):
-	item: str = Field(min_length=1, max_length=100)
-	quantity: float = Field(gt=0)
-	unit: str = Field(min_length=1, max_length=40)
-	unit_cost_ngn: int = Field(ge=0)
-	reorder_level: float = Field(default=0, ge=0)
-
-
-class InventoryItem(BaseModel):
-	id: int
-	item: str
-	unit: str
-	quantity_on_hand: float
-	unit_cost_ngn: float
-	reorder_level: float
-	updated_at: str
-
-
-class ProfitReport(BaseModel):
-	start_date: str
-	end_date: str
-	sales_ngn: int
-	expenses_ngn: int
-	cost_of_goods_ngn: int
-	estimated_profit_ngn: int
-	uncosted_sales_count: int
 
 
 def create_app(
 	database_path: str | Path | None = None,
 	message_extractor: Callable[..., dict[str, Any]] | None = None,
+	audio_transcriber: Callable[..., dict[str, str | None]] | None = None,
+	weather_fetcher: Callable[..., Any] | None = None,
 ) -> FastAPI:
 	db_path = Path(database_path or os.getenv("SABIMARKET_DB_PATH", DEFAULT_DB_PATH))
 
@@ -152,6 +106,17 @@ def create_app(
 				correction_text TEXT NOT NULL,
 				corrected_at TEXT NOT NULL
 			);
+			CREATE TABLE IF NOT EXISTS market_reviews (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				market_id TEXT NOT NULL,
+				product TEXT NOT NULL COLLATE NOCASE,
+				reviewer_id TEXT NOT NULL,
+				rating INTEGER NOT NULL CHECK (rating BETWEEN 1 AND 5),
+				review_text TEXT NOT NULL,
+				created_at TEXT NOT NULL,
+				UNIQUE (market_id, product, reviewer_id)
+			);
+			CREATE INDEX IF NOT EXISTS market_reviews_product_idx ON market_reviews(product, market_id);
 			"""
 		)
 		entry_columns = {
@@ -162,6 +127,8 @@ def create_app(
 
 	app = FastAPI(title="MerchantPal API", version="0.2.0")
 	extractor = message_extractor or extract_message
+	transcriber = audio_transcriber or transcribe_audio
+	get_forecasts = weather_fetcher or fetch_lagos_market_forecasts
 
 	def correct_entry(
 		entry_id: int,
@@ -246,6 +213,147 @@ def create_app(
 	@app.get("/health")
 	def health() -> dict[str, str]:
 		return {"status": "ok"}
+
+	def get_review_summaries(connection: sqlite3.Connection, product: str) -> dict[str, dict[str, float | int]]:
+		rows = connection.execute(
+			"""
+			SELECT market_id, product, AVG(rating) AS average_rating, COUNT(*) AS review_count
+			FROM market_reviews WHERE product = ? COLLATE NOCASE
+			GROUP BY market_id, product
+			""",
+			(product,),
+		).fetchall()
+		return {
+			f"{row['market_id']}:{row['product']}": {
+				"average_rating": row["average_rating"],
+				"review_count": row["review_count"],
+			}
+			for row in rows
+		}
+
+	@app.get("/markets", response_model=MarketListResponse)
+	async def list_markets() -> dict[str, Any]:
+		try:
+			forecasts = await get_forecasts()
+			health = "available"
+		except Exception:
+			forecasts = {}
+			health = "unavailable"
+		return {
+			"data_notice": DATA_NOTICE,
+			"products": available_products(),
+			"weather_source": OPEN_METEO_ATTRIBUTION,
+			"weather_status": health,
+			"markets": [
+				{
+					"id": market_id,
+					**market,
+					"forecast": forecasts.get(market_id),
+				}
+				for market_id, market in MARKETS.items()
+			],
+		}
+
+	@app.post("/markets/recommend", response_model=MarketRecommendationResponse)
+	async def market_recommendation(request: MarketRecommendationRequest) -> dict[str, Any]:
+		travel_date = request.travel_date or datetime.now(UTC).date()
+		try:
+			forecasts = await get_forecasts()
+			weather_status = "available"
+		except Exception:
+			forecasts = {}
+			weather_status = "unavailable"
+		with closing(connect()) as connection:
+			result = recommend_market(
+				request.product,
+				request.quantity,
+				request.priority,
+				get_review_summaries(connection, request.product),
+				forecasts,
+				travel_date.isoformat(),
+			)
+		if not result["ranked_offers"]:
+			raise HTTPException(
+				status_code=404,
+				detail={"message": "No price offers found for this product.", "available_products": available_products()},
+			)
+		result["weather_status"] = weather_status
+		return result
+
+	@app.post("/markets/reviews", response_model=MarketReviewResponse, status_code=201)
+	def submit_market_review(
+		review: MarketReviewCreate,
+		connection: sqlite3.Connection = Depends(get_connection),
+	) -> dict[str, Any]:
+		if review.market_id not in MARKETS:
+			raise HTTPException(status_code=404, detail="Unknown market.")
+		canonical_product = next(
+			(product for product in available_products() if product.casefold() == review.product.casefold()),
+			None,
+		)
+		if canonical_product is None:
+			raise HTTPException(status_code=404, detail="Unknown product.")
+		created_at = datetime.now(UTC).isoformat()
+		connection.execute(
+			"""
+			INSERT INTO market_reviews (market_id, product, reviewer_id, rating, review_text, created_at)
+			VALUES (?, ?, ?, ?, ?, ?)
+			ON CONFLICT(market_id, product, reviewer_id) DO UPDATE SET
+				rating = excluded.rating, review_text = excluded.review_text, created_at = excluded.created_at
+			""",
+			(review.market_id, canonical_product, review.reviewer_id.strip(), review.rating, review.review_text.strip(), created_at),
+		)
+		connection.commit()
+		return {
+			"status": "saved",
+			"market_id": review.market_id,
+			"product": canonical_product,
+			"rating": review.rating,
+			"review_text": review.review_text.strip(),
+			"verified_purchase": False,
+			"note": "Community-submitted and not purchase-verified.",
+		}
+
+	@app.get("/markets/reviews", response_model=MarketReviewsResponse)
+	def list_market_reviews(
+		product: str = Query(min_length=1, max_length=80),
+		market_id: str | None = Query(default=None, max_length=50),
+		connection: sqlite3.Connection = Depends(get_connection),
+	) -> dict[str, Any]:
+		if market_id:
+			rows = connection.execute(
+				"SELECT market_id, product, rating, review_text, created_at FROM market_reviews WHERE product = ? COLLATE NOCASE AND market_id = ? ORDER BY created_at DESC LIMIT 100",
+				(product, market_id),
+			).fetchall()
+		else:
+			rows = connection.execute(
+				"SELECT market_id, product, rating, review_text, created_at FROM market_reviews WHERE product = ? COLLATE NOCASE ORDER BY created_at DESC LIMIT 100",
+				(product,),
+			).fetchall()
+		return {
+			"product": product,
+			"verified_purchase": False,
+			"reviews": [dict(row) for row in rows],
+			"summary": get_review_summaries(connection, product),
+		}
+
+	@app.post("/transcribe")
+	async def transcribe(request: Request, language: str | None = Query(default=None, max_length=12)) -> dict[str, str | None]:
+		content_type = request.headers.get("content-type", "").split(";", maxsplit=1)[0].strip().casefold()
+		audio = bytearray()
+		async for chunk in request.stream():
+			audio.extend(chunk)
+			if len(audio) > 15 * 1024 * 1024:
+				raise HTTPException(status_code=413, detail="Audio upload must be 15 MB or smaller.")
+		try:
+			result = await asyncio.to_thread(transcriber, bytes(audio), content_type, language)
+		except ValueError as error:
+			raise HTTPException(status_code=415, detail=str(error)) from error
+		except RuntimeError as error:
+			raise HTTPException(status_code=503, detail=str(error)) from error
+		except Exception as error:
+			raise HTTPException(status_code=502, detail="Local audio transcription failed.") from error
+		return {"engine": "local-whisper", **result}
 
 	@app.post("/entries", response_model=Entry, status_code=201)
 	def create_entry(
