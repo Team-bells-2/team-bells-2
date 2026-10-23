@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../core/api/oja_api.dart';
 import '../core/ledger/ledger.dart';
 import '../core/theme.dart';
 import '../features/assistant/assistant_page.dart';
@@ -8,15 +9,62 @@ import '../features/inventory/inventory_page.dart';
 import '../features/profile/profile_page.dart';
 
 class OjaApp extends StatefulWidget {
-  const OjaApp({super.key});
+  const OjaApp({super.key, this.useLiveApi});
+
+  /// When null, live API is used outside widget tests.
+  final bool? useLiveApi;
 
   @override
   State<OjaApp> createState() => _OjaAppState();
 }
 
 class _OjaAppState extends State<OjaApp> {
-  final _book = OjaBook.demo();
+  late final bool _live;
+  late final OjaBook _book;
+  OjaApi? _api;
   var _tab = 0;
+  var _booting = false;
+  String? _bootError;
+
+  @override
+  void initState() {
+    super.initState();
+    _live = widget.useLiveApi ?? !_runningUnderTest;
+    if (_live) {
+      _api = OjaApi();
+      _book = OjaBook.live(_api!);
+      _booting = true;
+      _refresh();
+    } else {
+      _book = OjaBook.demo();
+    }
+  }
+
+  @override
+  void dispose() {
+    _api?.close();
+    super.dispose();
+  }
+
+  bool get _runningUnderTest =>
+      WidgetsBinding.instance.runtimeType.toString().contains('TestWidgetsFlutterBinding');
+
+  Future<void> _refresh() async {
+    try {
+      await _book.refreshFromApi();
+      if (!mounted) return;
+      setState(() {
+        _booting = false;
+        _bootError = null;
+      });
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _booting = false;
+        _bootError = error.toString();
+      });
+    }
+  }
 
   void _openRestock(String item) {
     setState(() {
@@ -24,6 +72,8 @@ class _OjaAppState extends State<OjaApp> {
       _tab = 2;
     });
   }
+
+  void _onBookChanged() => setState(() {});
 
   @override
   Widget build(BuildContext context) {
@@ -38,15 +88,59 @@ class _OjaAppState extends State<OjaApp> {
       home: Scaffold(
         body: SafeArea(
           bottom: false,
-          child: IndexedStack(
-            index: _tab,
-            children: [
-              HomePage(book: _book, onVoice: () => setState(() => _tab = 1), onRestock: _openRestock),
-              AssistantPage(book: _book, onChanged: () => setState(() {})),
-              InventoryPage(book: _book, onItem: (item) => setState(() => _book.marketItem = item)),
-              const ProfilePage(),
-            ],
-          ),
+          child: _booting
+              ? const Center(child: CircularProgressIndicator(color: ojaGreen))
+              : Column(
+                  children: [
+                    if (_bootError != null || _book.statusMessage != null)
+                      Material(
+                        color: ojaGreenSoft,
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                          child: Row(
+                            children: [
+                              Expanded(
+                                child: Text(
+                                  _bootError ?? _book.statusMessage!,
+                                  style: const TextStyle(color: ojaInk, fontSize: 13),
+                                ),
+                              ),
+                              if (_live)
+                                TextButton(
+                                  onPressed: () {
+                                    setState(() {
+                                      _booting = true;
+                                      _bootError = null;
+                                    });
+                                    _refresh();
+                                  },
+                                  child: const Text('Retry'),
+                                ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    Expanded(
+                      child: IndexedStack(
+                        index: _tab,
+                        children: [
+                          HomePage(
+                            book: _book,
+                            onVoice: () => setState(() => _tab = 1),
+                            onRestock: _openRestock,
+                            onRefresh: _live ? _refresh : null,
+                          ),
+                          AssistantPage(book: _book, onChanged: _onBookChanged),
+                          InventoryPage(
+                            book: _book,
+                            onItem: (item) => setState(() => _book.marketItem = item),
+                          ),
+                          ProfilePage(liveApi: _live, apiBaseUrl: _api?.baseUrl),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
         ),
         bottomNavigationBar: _NavBar(index: _tab, onSelect: (value) => setState(() => _tab = value)),
       ),

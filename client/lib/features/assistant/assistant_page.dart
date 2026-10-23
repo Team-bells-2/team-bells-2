@@ -33,11 +33,13 @@ class _AssistantPageState extends State<AssistantPage> {
     super.dispose();
   }
 
-  void _send(String raw) {
+  Future<void> _send(String raw) async {
     final text = raw.trim();
-    if (text.isEmpty) return;
+    if (text.isEmpty || widget.book.busy) return;
     _composer.clear();
-    widget.book.send(text);
+    setState(() {});
+    await widget.book.sendAsync(text);
+    if (!mounted) return;
     widget.onChanged();
     setState(() {});
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -157,13 +159,18 @@ class _AssistantPageState extends State<AssistantPage> {
             padding: EdgeInsets.only(bottom: 6),
             child: Text('Listening…', style: TextStyle(color: ojaGreen, fontWeight: FontWeight.w600)),
           ),
+        if (widget.book.busy)
+          const Padding(
+            padding: EdgeInsets.only(bottom: 6),
+            child: Text('Talking to OJA…', style: TextStyle(color: ojaGreen, fontWeight: FontWeight.w600)),
+          ),
         Padding(
           padding: const EdgeInsets.fromLTRB(12, 0, 12, 10),
           child: Row(
             children: [
               IconButton(
                 tooltip: _listening ? 'Stop' : 'Speak',
-                onPressed: _toggleMic,
+                onPressed: widget.book.busy ? null : _toggleMic,
                 style: IconButton.styleFrom(backgroundColor: ojaGreen, foregroundColor: Colors.white),
                 icon: Icon(_listening ? Icons.stop : Icons.mic),
               ),
@@ -172,6 +179,7 @@ class _AssistantPageState extends State<AssistantPage> {
                 child: TextField(
                   key: const Key('composer'),
                   controller: _composer,
+                  enabled: !widget.book.busy,
                   textInputAction: TextInputAction.send,
                   onSubmitted: _send,
                   style: const TextStyle(color: ojaInk),
@@ -194,7 +202,7 @@ class _AssistantPageState extends State<AssistantPage> {
               IconButton(
                 key: const Key('send'),
                 tooltip: 'Send',
-                onPressed: () => _send(_composer.text),
+                onPressed: widget.book.busy ? null : () => _send(_composer.text),
                 style: IconButton.styleFrom(backgroundColor: ojaGreen, foregroundColor: Colors.white),
                 icon: const Icon(Icons.arrow_upward),
               ),

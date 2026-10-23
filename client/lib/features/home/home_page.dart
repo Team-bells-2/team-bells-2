@@ -6,11 +6,18 @@ import '../../core/theme.dart';
 import '../../core/widgets/oja_card.dart';
 
 class HomePage extends StatelessWidget {
-  const HomePage({super.key, required this.book, required this.onVoice, required this.onRestock});
+  const HomePage({
+    super.key,
+    required this.book,
+    required this.onVoice,
+    required this.onRestock,
+    this.onRefresh,
+  });
 
   final OjaBook book;
   final VoidCallback onVoice;
   final ValueChanged<String> onRestock;
+  final Future<void> Function()? onRefresh;
 
   @override
   Widget build(BuildContext context) {
@@ -19,11 +26,14 @@ class HomePage extends StatelessWidget {
         if ((book.stock[item] ?? 0) <= reorderLevels[item]!) item,
     ];
     final debtor = _topDebtor(book);
-    return ListView(
+    final body = ListView(
       padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
       children: [
         const Text('OJA', style: TextStyle(color: ojaGreen, fontSize: 22, fontWeight: FontWeight.w800)),
-        const Text('Mile 12 Market, Lagos', style: TextStyle(color: ojaMuted)),
+        Text(
+          book.isLive ? 'Mile 12 Market, Lagos · live API' : 'Mile 12 Market, Lagos',
+          style: const TextStyle(color: ojaMuted),
+        ),
         const SizedBox(height: 16),
         Text(_greeting(), style: const TextStyle(color: ojaMuted)),
         const Text('Iya Basira', style: TextStyle(fontSize: 26, fontWeight: FontWeight.w700, color: ojaInk)),
@@ -98,6 +108,8 @@ class HomePage extends StatelessWidget {
           for (final entry in book.entries.reversed) _LoggedItem(entry: entry),
       ],
     );
+    if (onRefresh == null) return body;
+    return RefreshIndicator(color: ojaGreen, onRefresh: onRefresh!, child: body);
   }
 }
 

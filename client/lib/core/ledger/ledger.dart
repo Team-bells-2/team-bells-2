@@ -1,3 +1,6 @@
+import '../api/oja_api.dart';
+import '../catalog.dart';
+
 class ChatLine {
   ChatLine(this.fromTrader, this.text);
 
@@ -344,6 +347,16 @@ class OjaBook {
   _Draft? _pending;
   int _nextId = 1;
 
+  /// When set, home/assistant/inventory load from the live Render API.
+  OjaApi? api;
+  String conversationId = 'oja-flutter';
+  String? statusMessage;
+  bool busy = false;
+  int? _apiSales;
+  int? _apiExpenses;
+  int? _apiProfit;
+  int? _apiOwed;
+
   OjaBook();
 
   factory OjaBook.demo() {
@@ -356,29 +369,161 @@ class OjaBook {
     return book;
   }
 
+  factory OjaBook.live(OjaApi api) {
+    final book = OjaBook();
+    book.api = api;
+    for (final item in stockItems) {
+      book.stock[item] = 0;
+    }
+    return book;
+  }
+
+  bool get isLive => api != null;
+
   int get cashSales => _sum(EntryKind.cashSale);
 
   int get creditSales => _sum(EntryKind.creditSale);
 
-  int get sales => cashSales + creditSales;
+  int get sales => _apiSales ?? (cashSales + creditSales);
 
   int _sum(EntryKind kind) => entries
       .where((entry) => entry.kind == kind)
       .fold(0, (sum, entry) => sum + (entry.amountNgn ?? 0));
 
-  int get expenses => entries
-      .where((entry) => entry.kind == EntryKind.expense)
-      .fold(0, (sum, entry) => sum + (entry.amountNgn ?? 0));
+  int get expenses => _apiExpenses ??
+      entries.where((entry) => entry.kind == EntryKind.expense).fold(0, (sum, entry) => sum + (entry.amountNgn ?? 0));
 
-  int get profit => sales - expenses;
+  int get profit => _apiProfit ?? (sales - expenses);
 
   int get owed {
+    if (_apiOwed != null) return _apiOwed!;
     var total = 0;
     for (final name in _customers()) {
       final balance = balanceOf(name);
       if (balance > 0) total += balance;
     }
     return total;
+  }
+
+  Future<void> refreshFromApi() async {
+    final client = api;
+    if (client == null) return;
+    busy = true;
+    statusMessage = null;
+    try {
+      final profit = await client.getProfit();
+      final customers = await client.getCustomers();
+      final remoteEntries = await client.getEntries();
+      final inventory = await client.getInventory();
+
+      _apiSales = (profit['sales_ngn'] as num?)?.toInt() ?? 0;
+      _apiExpenses = (profit['expenses_ngn'] as num?)?.toInt() ?? 0;
+      _apiProfit = (profit['estimated_profit_ngn'] as num?)?.toInt() ?? 0;
+      _apiOwed = customers.fold<int>(0, (sum, row) => sum + ((row['amount_owed_ngn'] as num?)?.toInt() ?? 0));
+
+      entries
+        ..clear()
+        ..addAll(remoteEntries.reversed.map(_entryFromApi));
+      _nextId = entries.fold(1, (maxId, entry) => entry.id >= maxId ? entry.id + 1 : maxId);
+
+      for (final item in stockItems) {
+        stock[item] = 0;
+      }
+      for (final row in inventory) {
+        final name = (row['item'] as String? ?? '').toLowerCase();
+        if (name.isEmpty) continue;
+        stock[name] = (row['quantity_on_hand'] as num?)?.toDouble() ?? 0;
+      }
+    } on OjaApiException catch (error) {
+      statusMessage = error.message;
+      rethrow;
+    } finally {
+      busy = false;
+    }
+  }
+
+  /// Live API path for the assistant. Falls back to local rules when [api] is null.
+  Future<void> sendAsync(String raw) async {
+    final text = raw.trim();
+    if (text.isEmpty) return;
+    if (api == null) {
+      send(text);
+      return;
+    }
+
+    lines.add(ChatLine(true, text));
+    final normalized = _norm(text);
+    busy = true;
+    statusMessage = null;
+    try {
+      if (_isWho(normalized)) {
+        final result = await api!.ask(text);
+        lines.add(ChatLine(false, (result['answer'] as String?)?.trim().isNotEmpty == true
+            ? result['answer'] as String
+            : 'Nobody owes you.'));
+        await refreshFromApi();
+        return;
+      }
+      if (_isWhere(normalized)) {
+        lines.add(ChatLine(false, _where(text)));
+        return;
+      }
+
+      final result = await api!.sendMessage(text: text, conversationId: conversationId);
+      lines.add(ChatLine(false, _formatRemoteMessage(result)));
+      await refreshFromApi();
+    } on OjaApiException catch (error) {
+      statusMessage = error.message;
+      lines.add(ChatLine(false, error.message));
+    } finally {
+      busy = false;
+    }
+  }
+
+  String _formatRemoteMessage(Map<String, dynamic> result) {
+    final status = result['status'];
+    if (status == 'needs_clarification') {
+      return (result['question'] as String?)?.trim().isNotEmpty == true
+          ? result['question'] as String
+          : 'Tell me a bit more.';
+    }
+    if (status == 'corrected' || status == 'recorded') {
+      final entry = result['entry'];
+      if (entry is Map) {
+        final mapped = _entryFromApi(Map<String, dynamic>.from(entry));
+        return _confirm(mapped, updated: status == 'corrected');
+      }
+      final action = result['action'];
+      if (action is Map) {
+        final item = action['item'] ?? 'stock';
+        final qty = action['quantity_on_hand'] ?? action['quantity'];
+        return 'Saved. $item is now $qty.';
+      }
+    }
+    return 'Saved.';
+  }
+
+  LedgerEntry _entryFromApi(Map<String, dynamic> row) {
+    return LedgerEntry(
+      id: (row['id'] as num?)?.toInt() ?? _nextId++,
+      kind: _kindFromApi(row['type'] as String?),
+      rawText: row['raw_text'] as String? ?? '',
+      itemKey: (row['item'] as String?)?.toLowerCase(),
+      itemLabel: row['item'] as String?,
+      quantity: (row['quantity'] as num?)?.toDouble(),
+      unit: row['unit'] as String?,
+      amountNgn: (row['amount_ngn'] as num?)?.toInt(),
+      customer: row['customer'] as String?,
+    );
+  }
+
+  EntryKind _kindFromApi(String? type) {
+    return switch (type) {
+      'credit_sale' => EntryKind.creditSale,
+      'payment_received' => EntryKind.payment,
+      'expense' => EntryKind.expense,
+      _ => EntryKind.cashSale,
+    };
   }
 
   int balanceOf(String customer) {
