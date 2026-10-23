@@ -8,14 +8,35 @@ Product requirements: [final-prd.md](final-prd.md). Agent rules: [AGENTS.md](AGE
 
 ## Current OJA Status
 
-The new OJA backend is under `server/`. It currently contains database configuration/session scaffolding and vertical-slice placeholders. The OJA API endpoints and Flutter client are not implemented yet. Dependencies are managed with Poetry in `server/`.
+The OJA backend is under `server/`. All server endpoints in [final-prd.md](final-prd.md) Section 8 are implemented: onboarding and profile, messages (text and voice), entries, customers, ask, home, inventory, suggestions, consent and agent summary. A judges' dashboard is served at `/dashboard`. The Flutter client is not in this repo yet.
 
 ```sh
 cd server
 poetry install
 ```
 
-Copy the root `.env.example` to `.env` and configure variables used by `server/app/shared/env.py`. Never commit `.env` or place secrets in client code. The planned database is PostgreSQL; an example SQLAlchemy URL is `postgresql+psycopg://user:password@localhost:5432/oja`.
+Copy the root `.env.example` to `.env` and configure variables used by `server/app/shared/env.py`. Never commit `.env` or place secrets in client code. Use PostgreSQL (`postgresql+psycopg://user:password@localhost:5432/oja`) or, for a laptop demo, SQLite (`sqlite:///./oja.sqlite3`). Tables and the synthetic supplier data are created on startup.
+
+Run the API, from `server/`:
+
+```sh
+uvicorn app.main:app --host 0.0.0.0 --port 8000
+```
+
+Open `http://localhost:8000/dashboard`. With `DEMO_CONTROLS_ENABLED=true`, "Seed demo data" creates the demo trader (phone `08030000001`, Mama Ngozi and other customers with nicknames, starting stock) and puts its session token on the dashboard. The dashboard also has a lender agent screen and a trader console that stands in for the app.
+
+Offline demo: set `DEMO_MODE=true` to skip every provider call. Extraction then uses the rule-based fallback, which also takes over automatically when the LLM call fails.
+
+Evaluation (FR-S18), from the repository root:
+
+```sh
+PYTHONPATH=server python eval/run_eval.py --adapter app.ai.index:extract_message
+```
+
+## AI tools used (NFR-12)
+
+- OpenAI API (`OJA_MODEL`, `OJA_STT_MODEL`) for extraction, name matching, intent routing, restock reason wording and speech-to-text.
+- AI coding assistants: Claude Code (Anthropic). Team members add any others they used.
 
 ## Legacy MerchantPal Prototype
 

@@ -1,6 +1,15 @@
 # OJA: Frontend Handoff
 
-This contract follows [final-prd.md](final-prd.md), especially Sections 4, 7, and 8. **Status: planned.** The OJA backend in `server/` is still a scaffold; API field-level request/response shapes remain provisional until Sprint 0 freezes them.
+This contract follows [final-prd.md](final-prd.md), especially Sections 4, 7, and 8. **Status: implemented in `server/`.** The live schema is at `/docs` (OpenAPI) when the server runs.
+
+## Implementation notes the PRD does not spell out
+
+- **Voice:** `POST /messages` takes JSON, not multipart: `{"audio_base64": "...", "audio_filename": "voice.m4a", "client_message_id": "..."}`. The response carries `transcript`. A failed transcription returns `status: "fallback"` and writes nothing, so resend with the same `client_message_id`.
+- **Message statuses:** `saved` (with `confirmation` and `entry`; `updated: true` for a correction), `clarify` (show `question`, send the trader's reply as the next message), `fallback`.
+- **Questions** ("who owes me?") go to `POST /ask`, not `/messages`. Response: `{intent, answer, ...}`.
+- **Consent for agents:** `POST /access-requests` takes `trader_phone`, `agent_name`, `purpose`, `data_scopes` (any of `sales_total`, `active_days`, `total_owed`) and returns `request_id` and a one-time `claim_secret`. The agent polls `GET /access-requests/{id}/status` with header `X-Claim-Secret`; after approval the response carries `access_token` exactly once.
+- **Approve or reject** from the app: `POST /access-requests/{id}/approve` with `{"approve": true|false}`. `GET /access-requests` items include a ready-made `prompt` string and the access `log`.
+- **Home** includes `recent_entries` and, for each low-stock item, `top_suggestion`.
 
 ## Client Rules
 
