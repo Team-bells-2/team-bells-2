@@ -3,11 +3,13 @@ from app.inventory.models import InventoryItem, StockMovement
 from app.inventory.repositories.inventory_repository import InventoryRepository
 from app.inventory.schemas import InventoryItemCreate, InventoryItemOut, InventoryItemUpdate, StockMovementCreate
 from app.shared.errors import AppError
+from app.shared.Infrastructure.realtime.hub import EventPublisher
 
 
 class InventoryOrchestrator:
-    def __init__(self, inventory_repository: InventoryRepository):
+    def __init__(self, inventory_repository: InventoryRepository, events: EventPublisher):
         self.inventory_repository = inventory_repository
+        self.events = events
 
     def list_items(self, trader_id: int) -> list[InventoryItemOut]:
         return [
@@ -26,7 +28,7 @@ class InventoryOrchestrator:
             self.inventory_repository.rollback()
             raise
         self.inventory_repository.refresh(item)
-        return services.to_item_out(item, self.inventory_repository.get_quantity_on_hand(item.id))
+        return self._changed(trader_id, item)
 
     def update_item(self, trader_id: int, item_id: int, request: InventoryItemUpdate) -> InventoryItemOut:
         """Edits details only; quantity on hand is untouched (BR-I2)."""
@@ -44,7 +46,7 @@ class InventoryOrchestrator:
             self.inventory_repository.rollback()
             raise
         self.inventory_repository.refresh(item)
-        return services.to_item_out(item, self.inventory_repository.get_quantity_on_hand(item.id))
+        return self._changed(trader_id, item)
 
     def add_stock(self, trader_id: int, item_id: int, request: StockMovementCreate) -> InventoryItemOut:
         """FR-S24: opening, restock or adjustment. Quantity on hand is the sum of movements."""
@@ -62,7 +64,13 @@ class InventoryOrchestrator:
         except Exception:
             self.inventory_repository.rollback()
             raise
-        return services.to_item_out(item, self.inventory_repository.get_quantity_on_hand(item.id))
+        return self._changed(trader_id, item)
+
+    def _changed(self, trader_id: int, item: InventoryItem) -> InventoryItemOut:
+        """The item as it is now, also pushed to the trader's connected clients (after the commit)."""
+        item_out = services.to_item_out(item, self.inventory_repository.get_quantity_on_hand(item.id))
+        self.events.publish(trader_id, "inventory_changed", item_out)
+        return item_out
 
     def _get_item(self, trader_id: int, item_id: int) -> InventoryItem:
         item = self.inventory_repository.get_item(trader_id, item_id)

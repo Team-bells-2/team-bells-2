@@ -20,6 +20,7 @@ from app.onboarding.models import Trader
 from app.onboarding.repositories.trader_repository import TraderRepository
 from app.onboarding.router import get_current_trader
 from app.shared.env import settings
+from app.shared.Infrastructure.realtime.hub import EventPublisher, get_event_publisher
 
 router = APIRouter(tags=["consent"])
 
@@ -31,9 +32,10 @@ def get_consent_orchestrator(
     access_repository: AccessRepository = Depends(get_access_repository),
     trader_repository: TraderRepository = Depends(get_trader_repository),
     entry_repository: EntryRepository = Depends(get_entry_repository),
+    events: EventPublisher = Depends(get_event_publisher),
 ) -> ConsentOrchestrator:
     return ConsentOrchestrator(
-        access_repository, trader_repository, entry_repository, settings.ACCESS_TOKEN_TTL_MINUTES
+        access_repository, trader_repository, entry_repository, settings.ACCESS_TOKEN_TTL_MINUTES, events
     )
 
 

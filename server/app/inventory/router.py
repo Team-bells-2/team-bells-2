@@ -6,14 +6,16 @@ from app.inventory.repositories.inventory_repository import InventoryRepository
 from app.inventory.schemas import InventoryItemCreate, InventoryItemOut, InventoryItemUpdate, StockMovementCreate
 from app.onboarding.models import Trader
 from app.onboarding.router import get_current_trader
+from app.shared.Infrastructure.realtime.hub import EventPublisher, get_event_publisher
 
 router = APIRouter(tags=["inventory"])
 
 
 def get_inventory_orchestrator(
     inventory_repository: InventoryRepository = Depends(get_inventory_repository),
+    events: EventPublisher = Depends(get_event_publisher),
 ) -> InventoryOrchestrator:
-    return InventoryOrchestrator(inventory_repository)
+    return InventoryOrchestrator(inventory_repository, events)
 
 
 @router.get("/inventory", response_model=list[InventoryItemOut])

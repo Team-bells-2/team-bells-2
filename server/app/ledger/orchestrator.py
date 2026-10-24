@@ -8,17 +8,25 @@ from app.ai.orchestrator import AIOrchestrator, InterpretationFailed
 from app.ai.schemas import Interpretation
 from app.customers.models import Customer
 from app.customers.repositories.customer_repository import CustomerRepository
+from app.inventory import services as inventory_services
 from app.inventory.models import StockMovement
 from app.inventory.repositories.inventory_repository import InventoryRepository
 from app.ledger import services
 from app.ledger.models import Entry, EntryEdit, PendingClarification
 from app.ledger.repositories.clarification_repository import ClarificationRepository
 from app.ledger.repositories.entry_repository import EntryRepository
-from app.ledger.repositories.processed_message_repository import ProcessedMessageRepository
+from app.ledger.repositories.processed_message_repository import (
+    ProcessedMessageRepository,
+)
 from app.ledger.schemas import EntryOut, ExtractedEntry, LedgerResult
 from app.shared.errors import AppError
 from app.shared.Infrastructure.llm.client import LLMError
-from app.shared.Infrastructure.SST.client import SUPPORTED_AUDIO_TYPES, Transcriber, TranscriptionError
+from app.shared.Infrastructure.realtime.hub import EventPublisher
+from app.shared.Infrastructure.SST.client import (
+    SUPPORTED_AUDIO_TYPES,
+    Transcriber,
+    TranscriptionError,
+)
 from app.shared.periods import LAGOS
 
 # Outcome of resolving a customer mention: (kind, customer, detail).
@@ -44,6 +52,7 @@ class LedgerOrchestrator:
         confidence_threshold: float,
         customer_link_confidence: float,
         customer_confirm_confidence: float,
+        events: EventPublisher,
     ):
         self.entry_repository = entry_repository
         self.clarification_repository = clarification_repository
@@ -55,8 +64,13 @@ class LedgerOrchestrator:
         self.confidence_threshold = confidence_threshold
         self.customer_link_confidence = customer_link_confidence
         self.customer_confirm_confidence = customer_confirm_confidence
+        self.events = events
+        # Inventory items whose stock movement changed in the current unit of work (published after commit).
+        self._stock_touched: set[int] = set()
 
-    def handle_text_message(self, trader_id: int, client_message_id: str, text: str) -> LedgerResult:
+    def handle_text_message(
+        self, trader_id: int, client_message_id: str, text: str
+    ) -> LedgerResult:
         """POST /messages (FR-S1): interpret, then save, correct, clarify or fall back. Retries replay (NFR-5)."""
         return self._handle(trader_id, client_message_id, text, transcript=None)
 
@@ -68,18 +82,28 @@ class LedgerOrchestrator:
         if replay is not None:
             return replay
         if content_type not in SUPPORTED_AUDIO_TYPES:
-            raise AppError(415, "unsupported_audio", "Unsupported audio type. Use WAV, MP3, M4A, AAC, OGG, WebM or FLAC.")
+            raise AppError(
+                415,
+                "unsupported_audio",
+                "Unsupported audio type. Use WAV, MP3, M4A, AAC, OGG, WebM or FLAC.",
+            )
         if not audio:
             raise AppError(422, "empty_audio", "The voice note is empty.")
         try:
             transcript = self.transcriber.transcribe(audio, content_type)
         except TranscriptionError as error:
             raise AppError(
-                502, "transcription_failed", "We couldn't hear that voice note. Please resend it or type the message."
+                502,
+                "transcription_failed",
+                "We couldn't hear that voice note. Please resend it or type the message.",
             ) from error
-        return self._handle(trader_id, client_message_id, transcript, transcript=transcript)
+        return self._handle(
+            trader_id, client_message_id, transcript, transcript=transcript
+        )
 
-    def submit_entry(self, trader_id: int, raw_text: str, extracted: ExtractedEntry) -> LedgerResult:
+    def submit_entry(
+        self, trader_id: int, raw_text: str, extracted: ExtractedEntry
+    ) -> LedgerResult:
         """Save a complete entry, or hold it and ask one question. A pending entry is completed by the next message."""
         try:
             result = self._submit_entry(trader_id, raw_text, extracted)
@@ -89,7 +113,9 @@ class LedgerOrchestrator:
             raise
         return result
 
-    def correct_last_entry(self, trader_id: int, changes: ExtractedEntry) -> LedgerResult:
+    def correct_last_entry(
+        self, trader_id: int, changes: ExtractedEntry
+    ) -> LedgerResult:
         """Update the trader's last saved entry in place and record the change (FR-S6)."""
         try:
             result = self._correct_last_entry(trader_id, changes)
@@ -107,34 +133,52 @@ class LedgerOrchestrator:
         limit: int,
         offset: int,
     ) -> Sequence[EntryOut]:
-        rows = self.entry_repository.list_entries(trader_id, since, entry_type, limit, offset)
-        return [services.to_entry_out(entry, customer_name) for entry, customer_name in rows]
+        rows = self.entry_repository.list_entries(
+            trader_id, since, entry_type, limit, offset
+        )
+        return [
+            services.to_entry_out(entry, customer_name) for entry, customer_name in rows
+        ]  # pyright: ignore[reportAssignmentType]
 
-    def _handle(self, trader_id: int, client_message_id: str, text: str, transcript: str | None) -> LedgerResult:
+    def _handle(
+        self, trader_id: int, client_message_id: str, text: str, transcript: str | None
+    ) -> LedgerResult:
         replay = self._replay(trader_id, client_message_id)
         if replay is not None:
             return replay
         pending = self.clarification_repository.get_pending(trader_id)
         kind = pending.partial_entry.get(services.PENDING_KIND) if pending else None
-        if pending and kind in {"confirm_entry", "confirm_customer"} and (services.is_yes(text) or services.is_no(text)):
+        if (
+            pending
+            and kind in {"confirm_entry", "confirm_customer"}
+            and (services.is_yes(text) or services.is_no(text))
+        ):
             # A yes/no to our own question is read in code, without a model call (BR-L6).
             confirmed_pending = pending
-            work: Callable[[], LedgerResult] = lambda: self._answer_confirmation(trader_id, text, confirmed_pending)
+            work: Callable[[], LedgerResult] = lambda: self._answer_confirmation(
+                trader_id, text, confirmed_pending
+            )
         else:
             interpretation = self._interpret(trader_id, text)
             work = lambda: self._route(trader_id, text, interpretation)
         return self._process_once(
-            trader_id, client_message_id, lambda: work().model_copy(update={"transcript": transcript})
+            trader_id,
+            client_message_id,
+            lambda: work().model_copy(update={"transcript": transcript}),
         )
 
     def _replay(self, trader_id: int, client_message_id: str) -> LedgerResult | None:
-        processed = self.processed_message_repository.get_processed(trader_id, client_message_id)
+        processed = self.processed_message_repository.get_processed(
+            trader_id, client_message_id
+        )
         return LedgerResult.model_validate(processed.response) if processed else None
 
     def _process_once(
         self, trader_id: int, client_message_id: str, work: Callable[[], LedgerResult]
     ) -> LedgerResult:
-        """Run `work` and record the message as processed in the same transaction."""
+        """Run `work` and record the message as processed in the same transaction. Change events go out
+        only after the commit, and only for newly processed messages (a replay changed nothing)."""
+        self._stock_touched = set()
         try:
             result = work()
             self.processed_message_repository.add_processed(
@@ -151,35 +195,68 @@ class LedgerOrchestrator:
         except Exception:
             self.entry_repository.rollback()
             raise
+        self._publish_changes(trader_id, result)
         return result
+
+    def _publish_changes(self, trader_id: int, result: LedgerResult) -> None:
+        if result.entry is not None and result.status in {"saved", "corrected"}:
+            event = "entry_saved" if result.status == "saved" else "entry_updated"
+            self.events.publish(trader_id, event, result.entry)
+        for item_id in sorted(self._stock_touched):
+            item = self.inventory_repository.get_item(trader_id, item_id)
+            if item is not None:
+                quantity = self.inventory_repository.get_quantity_on_hand(item.id)
+                self.events.publish(trader_id, "inventory_changed", inventory_services.to_item_out(item, quantity))
+        self._stock_touched = set()
 
     def _interpret(self, trader_id: int, text: str) -> Interpretation | None:
         """None means the model's output was invalid twice (FR-S3); the trader is asked to repeat."""
         try:
-            return self.ai_orchestrator.interpret_message(text, self._interpretation_context(trader_id))
+            return self.ai_orchestrator.interpret_message(
+                text, self._interpretation_context(trader_id)
+            )
         except InterpretationFailed:
             return None
         except LLMError as error:
             raise AppError(
-                503, "ai_unavailable", "The assistant is unavailable right now. Please try again in a moment."
+                503,
+                "ai_unavailable",
+                "The assistant is unavailable right now. Please try again in a moment.",
             ) from error
 
     def _interpretation_context(self, trader_id: int) -> dict[str, Any]:
         context: dict[str, Any] = {
             "today": datetime.now(LAGOS).date().isoformat(),
-            "customers": [customer.canonical_name for customer in self.customer_repository.list_customers(trader_id)],
+            "customers": self._customer_list(
+                trader_id, self.customer_repository.list_aliases(trader_id)
+            ),
+            "items": [
+                item.name
+                for item, _ in self.inventory_repository.list_items_with_quantity(
+                    trader_id
+                )
+            ],
         }
         pending = self.clarification_repository.get_pending(trader_id)
         if pending:
-            context["pending"] = {"fields": services.entry_fields(pending.partial_entry), "question": pending.question}
+            context["pending"] = {
+                "fields": services.entry_fields(pending.partial_entry),
+                "question": pending.question,
+            }
         last_entry = self.entry_repository.get_last_saved_entry(trader_id)
         if last_entry:
-            context["last_entry"] = services.entry_snapshot(last_entry, self._customer_name(trader_id, last_entry))
+            context["last_entry"] = services.entry_snapshot(
+                last_entry, self._customer_name(trader_id, last_entry)
+            )
         return context
 
-    def _route(self, trader_id: int, text: str, interpretation: Interpretation | None) -> LedgerResult:
+    def _route(
+        self, trader_id: int, text: str, interpretation: Interpretation | None
+    ) -> LedgerResult:
         if interpretation is None:
-            return LedgerResult(status="clarify", message=services.NOT_UNDERSTOOD_MESSAGE)
+            return LedgerResult(
+                status="clarify", message=services.NOT_UNDERSTOOD_MESSAGE
+            )
         if interpretation.intent == "unknown":
             return LedgerResult(status="fallback", message=services.FALLBACK_MESSAGE)
 
@@ -190,21 +267,32 @@ class LedgerOrchestrator:
         # A "correction" while an entry is pending changes that pending entry, so it merges like an answer.
         return self._submit_entry(trader_id, text, extracted)
 
-    def _submit_entry(self, trader_id: int, raw_text: str, extracted: ExtractedEntry) -> LedgerResult:
+    def _submit_entry(
+        self, trader_id: int, raw_text: str, extracted: ExtractedEntry
+    ) -> LedgerResult:
         pending = self.clarification_repository.get_pending(trader_id)
         partial: dict[str, Any] = dict(pending.partial_entry) if pending else {}
-        if pending and services.starts_over(raw_text, extracted, services.entry_fields(partial)):
+        if pending and services.starts_over(
+            raw_text, extracted, services.entry_fields(partial)
+        ):
             self.clarification_repository.delete_pending(pending)
             pending, partial = None, {}
-        elif pending and partial.get(services.PENDING_KIND) in {"confirm_entry", "confirm_customer"}:
+        elif pending and partial.get(services.PENDING_KIND) in {
+            "confirm_entry",
+            "confirm_customer",
+        }:
             # Neither yes, no nor a new entry: repeat the question; nothing is saved.
             return LedgerResult(status="clarify", message=pending.question)
 
         texts: list[str] = [*partial.get(services.PENDING_TEXTS, []), raw_text]
         fields = services.merge_partial(partial, extracted)
         # The trader answering our own missing-field question is not gated on confidence again (BR-L4).
-        answered_question = pending is not None and partial.get(services.PENDING_KIND) == "missing"
-        return self._complete(trader_id, fields, texts, pending, check_confidence=not answered_question)
+        answered_question = (
+            pending is not None and partial.get(services.PENDING_KIND) == "missing"
+        )
+        return self._complete(
+            trader_id, fields, texts, pending, check_confidence=not answered_question
+        )
 
     def _complete(
         self,
@@ -217,13 +305,25 @@ class LedgerOrchestrator:
     ) -> LedgerResult:
         """Ask for what is missing, confirm a low-confidence reading, resolve the customer, then save."""
         if services.missing_fields(fields):
-            return self._hold(trader_id, fields, texts, services.missing_question(fields), "missing")
+            return self._hold(
+                trader_id, fields, texts, services.missing_question(fields), "missing"
+            )
 
         complete = ExtractedEntry.model_validate(fields)
-        if check_confidence and services.is_low_confidence(complete.confidence, self.confidence_threshold):
-            return self._hold(trader_id, fields, texts, services.confirmation_question(fields), "confirm_entry")
+        if check_confidence and services.is_low_confidence(
+            complete.confidence, self.confidence_threshold
+        ):
+            return self._hold(
+                trader_id,
+                fields,
+                texts,
+                services.confirmation_question(fields),
+                "confirm_entry",
+            )
 
-        kind, customer, detail = self._resolve_customer(trader_id, complete.customer, " ".join(texts))
+        kind, customer, detail = self._resolve_customer(
+            trader_id, complete.customer, " ".join(texts)
+        )
         if kind == "ambiguous" and detail:
             fields.pop("customer", None)
             return self._hold(trader_id, fields, texts, detail, "missing")
@@ -241,7 +341,9 @@ class LedgerOrchestrator:
             customer = self._create_customer(trader_id, complete.customer)
         return self._save_entry(trader_id, fields, texts, customer, pending, confirmed)
 
-    def _answer_confirmation(self, trader_id: int, text: str, pending: PendingClarification) -> LedgerResult:
+    def _answer_confirmation(
+        self, trader_id: int, text: str, pending: PendingClarification
+    ) -> LedgerResult:
         """Yes/no to "Just to confirm ...?" or "Do you mean X?" (BR-L6)."""
         partial = dict(pending.partial_entry)
         fields = services.entry_fields(partial)
@@ -250,8 +352,17 @@ class LedgerOrchestrator:
         if partial.get(services.PENDING_KIND) == "confirm_entry":
             if services.is_no(text):
                 self.clarification_repository.delete_pending(pending)
-                return LedgerResult(status="fallback", message=services.NOT_SAVED_MESSAGE)
-            return self._complete(trader_id, fields, texts, pending, check_confidence=False, confirmed=True)
+                return LedgerResult(
+                    status="fallback", message=services.NOT_SAVED_MESSAGE
+                )
+            return self._complete(
+                trader_id,
+                fields,
+                texts,
+                pending,
+                check_confidence=False,
+                confirmed=True,
+            )
 
         candidate = str(partial.get(services.PENDING_CANDIDATE, ""))
         mention = partial.get(services.PENDING_MENTION)
@@ -261,16 +372,28 @@ class LedgerOrchestrator:
                 self._add_alias(customer, str(mention))
         else:
             aliases = self.customer_repository.list_aliases(trader_id)
-            others = [c for c in services.customers_named_in(text, aliases) if c.canonical_name != candidate]
+            others = [
+                c
+                for c in services.customers_named_in(text, aliases)
+                if c.canonical_name != candidate
+            ]
             if len(others) == 1:
                 customer = others[0]
             elif mention:
                 customer = self._create_customer(trader_id, str(mention))
             else:
                 fields.pop("customer", None)
-                return self._hold(trader_id, fields, texts, services.WHICH_CUSTOMER_QUESTION, "missing")
+                return self._hold(
+                    trader_id,
+                    fields,
+                    texts,
+                    services.WHICH_CUSTOMER_QUESTION,
+                    "missing",
+                )
         fields["customer"] = customer.canonical_name
-        return self._save_entry(trader_id, fields, texts, customer, pending, confirmed=True)
+        return self._save_entry(
+            trader_id, fields, texts, customer, pending, confirmed=True
+        )
 
     def _save_entry(
         self,
@@ -314,25 +437,51 @@ class LedgerOrchestrator:
             flags=flags,
         )
 
-    def _correct_last_entry(self, trader_id: int, changes: ExtractedEntry) -> LedgerResult:
+    def _correct_last_entry(
+        self, trader_id: int, changes: ExtractedEntry
+    ) -> LedgerResult:
         entry = self.entry_repository.get_last_saved_entry(trader_id)
         if entry is None:
-            raise AppError(409, "no_entry_to_correct", "There is no saved entry to correct.")
+            raise AppError(
+                409, "no_entry_to_correct", "There is no saved entry to correct."
+            )
 
         old_customer = (
-            self.customer_repository.get_customer_by_id(trader_id, entry.customer_id) if entry.customer_id else None
+            self.customer_repository.get_customer_by_id(trader_id, entry.customer_id)
+            if entry.customer_id
+            else None
         )
-        old_values = services.entry_snapshot(entry, old_customer.canonical_name if old_customer else None)
+        old_values = services.entry_snapshot(
+            entry, old_customer.canonical_name if old_customer else None
+        )
 
         customer = old_customer
         if changes.customer is not None:
-            kind, resolved, detail = self._resolve_customer(trader_id, changes.customer, changes.customer)
+            kind, resolved, detail = self._resolve_customer(
+                trader_id, changes.customer, changes.customer
+            )
             if kind == "ambiguous":
-                raise AppError(422, "ambiguous_customer", detail or services.WHICH_CUSTOMER_QUESTION)
+                raise AppError(
+                    422,
+                    "ambiguous_customer",
+                    detail or services.WHICH_CUSTOMER_QUESTION,
+                )
             if kind == "confirm":
-                raise AppError(422, "ambiguous_customer", f"Do you mean {detail}? Please use the full name.")
+                raise AppError(
+                    422,
+                    "ambiguous_customer",
+                    f"Do you mean {detail}? Please use the full name.",
+                )
             customer = resolved or self._create_customer(trader_id, changes.customer)
-        for field in ("type", "item", "quantity", "unit", "amount_ngn", "due_date", "confidence"):
+        for field in (
+            "type",
+            "item",
+            "quantity",
+            "unit",
+            "amount_ngn",
+            "due_date",
+            "confidence",
+        ):
             value = getattr(changes, field)
             if value is not None:
                 setattr(entry, field, value)
@@ -341,7 +490,9 @@ class LedgerOrchestrator:
         customer_name = customer.canonical_name if customer else None
         fields_after = {**old_values, "type": entry.type, "customer": customer_name}
         if services.missing_fields(fields_after):
-            raise AppError(422, "incomplete_correction", services.missing_question(fields_after))
+            raise AppError(
+                422, "incomplete_correction", services.missing_question(fields_after)
+            )
 
         flags = self._apply_stock_effect(trader_id, entry)
         self.entry_repository.add_edit(
@@ -369,14 +520,20 @@ class LedgerOrchestrator:
         candidate: str | None = None,
         mention: str | None = None,
     ) -> LedgerResult:
-        partial: dict[str, Any] = {**fields, services.PENDING_TEXTS: texts, services.PENDING_KIND: kind}
+        partial: dict[str, Any] = {
+            **fields,
+            services.PENDING_TEXTS: texts,
+            services.PENDING_KIND: kind,
+        }
         if candidate is not None:
             partial[services.PENDING_CANDIDATE] = candidate
             partial[services.PENDING_MENTION] = mention
         self.clarification_repository.save_pending(trader_id, partial, question)
         return LedgerResult(status="clarify", message=question)
 
-    def _resolve_customer(self, trader_id: int, mention: str | None, text: str) -> Resolution:
+    def _resolve_customer(
+        self, trader_id: int, mention: str | None, text: str
+    ) -> Resolution:
         """FR-S9 / BR-L5: alias table first (aliases found in the message), then the canonical name,
         then the model against the trader's customer list."""
         if not mention:
@@ -386,10 +543,18 @@ class LedgerOrchestrator:
         if len(named) == 1:
             return "ok", named[0], None
         if len(named) > 1:
-            exact = [c for c in named if c.canonical_name.casefold() == mention.strip().casefold()]
+            exact = [
+                c
+                for c in named
+                if c.canonical_name.casefold() == mention.strip().casefold()
+            ]
             if len(exact) == 1:
                 return "ok", exact[0], None
-            return "ambiguous", None, services.ambiguous_customer_question([c.canonical_name for c in named])
+            return (
+                "ambiguous",
+                None,
+                services.ambiguous_customer_question([c.canonical_name for c in named]),
+            )
 
         existing = self.customer_repository.get_customer_by_name(trader_id, mention)
         if existing is not None:
@@ -407,20 +572,27 @@ class LedgerOrchestrator:
                 return "confirm", None, name
         return "new", None, None
 
-    def _customer_list(self, trader_id: int, aliases: Sequence[Any]) -> list[dict[str, Any]]:
+    def _customer_list(
+        self, trader_id: int, aliases: Sequence[Any]
+    ) -> list[dict[str, Any]]:
         """Each customer's name and other aliases, for the model's matching (BR-A7 checks its answer)."""
         by_customer: dict[int, list[str]] = {}
         for alias, customer in aliases:
             if alias.casefold() != customer.canonical_name.casefold():
                 by_customer.setdefault(customer.id, []).append(alias)
         return [
-            {"name": customer.canonical_name, "aliases": by_customer.get(customer.id, [])}
+            {
+                "name": customer.canonical_name,
+                "aliases": by_customer.get(customer.id, []),
+            }
             for customer in self.customer_repository.list_customers(trader_id)
         ]
 
     def _create_customer(self, trader_id: int, name: str) -> Customer:
         """A new customer also gets its own name as an alias, so later messages find it (BR-L7)."""
-        customer = self.customer_repository.create_customer(trader_id, " ".join(name.split()))
+        customer = self.customer_repository.create_customer(
+            trader_id, " ".join(name.split())
+        )
         self._add_alias(customer, customer.canonical_name)
         return customer
 
@@ -432,14 +604,21 @@ class LedgerOrchestrator:
     def _customer_name(self, trader_id: int, entry: Entry) -> str | None:
         if entry.customer_id is None:
             return None
-        customer = self.customer_repository.get_customer_by_id(trader_id, entry.customer_id)
+        customer = self.customer_repository.get_customer_by_id(
+            trader_id, entry.customer_id
+        )
         return customer.canonical_name if customer else None
 
     def _apply_stock_effect(self, trader_id: int, entry: Entry) -> list[Any]:
         """Keep the entry's single stock movement in line with the entry (FR-S25, S26; BR-L9).
         Stock only changes through these rules; model output cannot act on inventory directly (NFR-1).
-        A sale larger than the stock on hand is saved and flagged "check_stock", with no movement."""
-        item = self.inventory_repository.get_item_by_name(trader_id, entry.item) if entry.item else None
+        A sale larger than the stock on hand is saved and flagged "check_stock", with no movement.
+        """
+        item = (
+            self.inventory_repository.get_item_by_name(trader_id, entry.item)
+            if entry.item
+            else None
+        )
         existing = self.inventory_repository.get_movement_for_entry(entry.id)
         warning: str | None = None
         if item is not None and entry.unit is None and entry.quantity is not None:
@@ -447,7 +626,11 @@ class LedgerOrchestrator:
         if entry.item and item is None and entry.type in services.SALE_TYPES:
             warning = "not_in_inventory"
 
-        effect = services.stock_effect(entry.type, entry.quantity) if item is not None else None
+        effect = (
+            services.stock_effect(entry.type, entry.quantity)
+            if item is not None
+            else None
+        )
         if item is not None and effect is not None and effect[1] == "sale":
             available = self.inventory_repository.get_quantity_on_hand(item.id)
             if existing and existing.inventory_item_id == item.id:
@@ -457,6 +640,10 @@ class LedgerOrchestrator:
 
         entry.inventory_item_id = item.id if item is not None else None
         entry.stock_warning = warning
+        if existing is not None:
+            self._stock_touched.add(existing.inventory_item_id)  # the old item, if the correction moved it
+        if item is not None and effect is not None:
+            self._stock_touched.add(item.id)
         if item is None or effect is None:
             if existing:
                 self.inventory_repository.delete_movement(existing)
@@ -466,6 +653,11 @@ class LedgerOrchestrator:
         else:
             change, reason = effect
             self.inventory_repository.add_movement(
-                StockMovement(inventory_item_id=item.id, entry_id=entry.id, quantity_change=change, reason=reason)
+                StockMovement(
+                    inventory_item_id=item.id,
+                    entry_id=entry.id,
+                    quantity_change=change,
+                    reason=reason,
+                )
             )
         return [warning] if warning else []

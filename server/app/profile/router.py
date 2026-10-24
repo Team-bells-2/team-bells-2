@@ -7,6 +7,7 @@ from app.onboarding.dependencies import get_location_repository, get_trader_repo
 from app.onboarding.router import get_current_trader
 from app.profile.orchestrator import ProfileOrchestrator
 from app.profile.schemas import ProfileOut, ProfileUpdate
+from app.shared.Infrastructure.realtime.hub import EventPublisher, get_event_publisher
 
 router = APIRouter(tags=["profile"])
 
@@ -14,8 +15,9 @@ router = APIRouter(tags=["profile"])
 def get_profile_orchestrator(
     location_repository: LocationRepository = Depends(get_location_repository),
     trader_repository: TraderRepository = Depends(get_trader_repository),
+    events: EventPublisher = Depends(get_event_publisher),
 ) -> ProfileOrchestrator:
-    return ProfileOrchestrator(location_repository, trader_repository)
+    return ProfileOrchestrator(location_repository, trader_repository, events)
 
 
 @router.get("/profile", response_model=ProfileOut)

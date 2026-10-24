@@ -26,6 +26,7 @@ from app.onboarding.models import Trader
 from app.onboarding.router import get_current_trader
 from app.shared.env import settings
 from app.shared.errors import AppError
+from app.shared.Infrastructure.realtime.hub import EventPublisher, get_event_publisher
 from app.shared.Infrastructure.SST.client import Transcriber, get_transcriber
 from app.shared.periods import Period, period_start
 
@@ -40,6 +41,7 @@ def get_ledger_orchestrator(
     processed_message_repository: ProcessedMessageRepository = Depends(get_processed_message_repository),
     ai_orchestrator: AIOrchestrator = Depends(get_ai_orchestrator),
     transcriber: Transcriber = Depends(get_transcriber),
+    events: EventPublisher = Depends(get_event_publisher),
 ) -> LedgerOrchestrator:
     return LedgerOrchestrator(
         entry_repository,
@@ -52,6 +54,7 @@ def get_ledger_orchestrator(
         settings.CONFIDENCE_THRESHOLD,
         settings.CUSTOMER_MATCH_LINK_CONFIDENCE,
         settings.CUSTOMER_MATCH_CONFIRM_CONFIDENCE,
+        events,
     )
 
 

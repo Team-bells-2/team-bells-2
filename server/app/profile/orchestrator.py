@@ -2,14 +2,18 @@ from app.onboarding.models import Trader
 from app.onboarding.repositories.location_repository import LocationRepository
 from app.onboarding.repositories.trader_repository import TraderRepository
 from app.profile import services
-from app.profile.schemas import ProfileUpdate
+from app.profile.schemas import ProfileOut, ProfileUpdate
 from app.shared.errors import AppError
+from app.shared.Infrastructure.realtime.hub import EventPublisher
 
 
 class ProfileOrchestrator:
-    def __init__(self, location_repository: LocationRepository, trader_repository: TraderRepository):
+    def __init__(
+        self, location_repository: LocationRepository, trader_repository: TraderRepository, events: EventPublisher
+    ):
         self.location_repository = location_repository
         self.trader_repository = trader_repository
+        self.events = events
 
     def update_profile(self, trader: Trader, update: ProfileUpdate) -> Trader:
         location = None
@@ -25,4 +29,5 @@ class ProfileOrchestrator:
             self.trader_repository.rollback()
             raise
         self.trader_repository.refresh(trader)
+        self.events.publish(trader.id, "profile_updated", ProfileOut.model_validate(trader))
         return trader

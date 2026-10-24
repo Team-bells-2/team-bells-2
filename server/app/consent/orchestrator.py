@@ -15,6 +15,7 @@ from app.consent.schemas import (
 from app.ledger.repositories.entry_repository import EntryRepository
 from app.onboarding.repositories.trader_repository import TraderRepository
 from app.shared.errors import AppError
+from app.shared.Infrastructure.realtime.hub import EventPublisher
 
 
 class ConsentOrchestrator:
@@ -28,11 +29,13 @@ class ConsentOrchestrator:
         trader_repository: TraderRepository,
         entry_repository: EntryRepository,
         token_ttl_minutes: int,
+        events: EventPublisher,
     ):
         self.access_repository = access_repository
         self.trader_repository = trader_repository
         self.entry_repository = entry_repository
         self.token_ttl_minutes = token_ttl_minutes
+        self.events = events
 
     # --- agent side ---------------------------------------------------------------------------
 
@@ -52,13 +55,25 @@ class ConsentOrchestrator:
                     claim_hash=services.hash_secret(claim_secret),
                 )
             )
-            self.access_repository.add_log(
+            log = self.access_repository.add_log(
                 access.id, "POST /access-requests", "requested"
             )
             self.access_repository.commit()
         except Exception:
             self.access_repository.rollback()
             raise
+        self.events.publish(
+            trader.id,
+            "access_requested",
+            {
+                "id": access.id,
+                "agent_name": access.agent_name,
+                "purpose": access.purpose,
+                "scopes": access.scopes,
+                "status": access.status,
+            },
+        )
+        self._publish_access_log(trader.id, log)
         return AccessRequestCreated(
             request_id=access.id, status="pending", claim_secret=claim_secret
         )
@@ -95,13 +110,14 @@ class ConsentOrchestrator:
                     expires_at=access.expires_at,
                 )
             )
-            self.access_repository.add_log(
+            log = self.access_repository.add_log(
                 access.id, "GET /access-requests/{id}/status", "token_issued"
             )
             self.access_repository.commit()
         except Exception:
             self.access_repository.rollback()
             raise
+        self._publish_access_log(access.trader_id, log)
         return status.model_copy(
             update={
                 "access_token": token,
@@ -131,11 +147,21 @@ class ConsentOrchestrator:
         now = datetime.now(UTC)
         if stored.revoked_at is not None or access.status == "revoked":
             self._log_and_fail(
-                access.id, endpoint, 403, "revoked", "The trader revoked this access."
+                access.id,
+                endpoint,
+                403,
+                "revoked",
+                "The trader revoked this access.",
+                access.trader_id,
             )
         if services.as_utc(stored.expires_at) <= now:
             self._log_and_fail(
-                access.id, endpoint, 401, "expired", "This access token has expired."
+                access.id,
+                endpoint,
+                401,
+                "expired",
+                "This access token has expired.",
+                access.trader_id,
             )
 
         since = now - timedelta(days=services.SUMMARY_PERIOD_DAYS)
@@ -157,11 +183,12 @@ class ConsentOrchestrator:
                 self.entry_repository.customer_balances(access.trader_id).values()
             )
         try:
-            self.access_repository.add_log(access.id, endpoint, "ok")
+            log = self.access_repository.add_log(access.id, endpoint, "ok")
             self.access_repository.commit()
         except Exception:
             self.access_repository.rollback()
             raise
+        self._publish_access_log(access.trader_id, log)
         return summary
 
     # --- trader side --------------------------------------------------------------------------
@@ -189,13 +216,19 @@ class ConsentOrchestrator:
             access.decided_at = now
             if approve:
                 access.expires_at = now + timedelta(minutes=self.token_ttl_minutes)
-            self.access_repository.add_log(
+            log = self.access_repository.add_log(
                 access.id, "POST /access-requests/{id}/approve", access.status
             )
             self.access_repository.commit()
         except Exception:
             self.access_repository.rollback()
             raise
+        self.events.publish(
+            trader_id,
+            "access_decided",
+            {"id": access.id, "status": access.status, "scopes": access.scopes},
+        )
+        self._publish_access_log(trader_id, log)
         return self._request_out(access)
 
     def revoke(self, trader_id: int, request_id: int) -> AccessRequestOut:
@@ -206,11 +239,17 @@ class ConsentOrchestrator:
             token = self.access_repository.get_token_for_request(access.id)
             if token is not None and token.revoked_at is None:
                 token.revoked_at = datetime.now(UTC)
-            self.access_repository.add_log(access.id, "DELETE /access/{id}", "revoked")
+            log = self.access_repository.add_log(access.id, "DELETE /access/{id}", "revoked")
             self.access_repository.commit()
         except Exception:
             self.access_repository.rollback()
             raise
+        self.events.publish(
+            trader_id,
+            "access_revoked",
+            {"id": access.id, "status": access.status},
+        )
+        self._publish_access_log(trader_id, log)
         return self._request_out(access)
 
     # --- helpers ------------------------------------------------------------------------------
@@ -256,12 +295,27 @@ class ConsentOrchestrator:
         status: int,
         code: str,
         message: str,
+        trader_id: int | None = None,
     ) -> None:
         """Failed agent calls are logged too (FR-S16), so the log row commits before the error."""
         try:
-            self.access_repository.add_log(request_id, endpoint, code)
+            log = self.access_repository.add_log(request_id, endpoint, code)
             self.access_repository.commit()
         except Exception:
             self.access_repository.rollback()
             raise
+        if trader_id is not None:
+            self._publish_access_log(trader_id, log)
         raise AppError(status, code, message)
+
+    def _publish_access_log(self, trader_id: int, log: AccessLog) -> None:
+        self.events.publish(
+            trader_id,
+            "access_log",
+            {
+                "request_id": log.request_id,
+                "endpoint": log.endpoint,
+                "result": log.result,
+                "at": services.as_utc(log.at),
+            },
+        )
