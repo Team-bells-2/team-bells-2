@@ -28,6 +28,10 @@ class Trader(Base):
     location_name: Mapped[str] = mapped_column(String(120))
     latitude: Mapped[float | None] = mapped_column(Float)
     longitude: Mapped[float | None] = mapped_column(Float)
+    # Optional PIN for logging in again (BR-O3): scrypt hash, never the PIN itself.
+    pin_hash: Mapped[str | None] = mapped_column(String(200))
+    failed_logins: Mapped[int] = mapped_column(server_default="0")
+    locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -46,4 +50,6 @@ class TraderSession(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+    # SESSION_TOKEN_TTL_DAYS after creation (BR-O4). Empty for sessions created before expiry existed.
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

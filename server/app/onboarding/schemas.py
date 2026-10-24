@@ -4,6 +4,9 @@ from decimal import Decimal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
+PIN_PATTERN = r"^\d{4,6}$"
+
+
 class OnboardingItem(BaseModel):
     """A main item the trader sells; becomes an inventory item, with opening stock if given (FR-S21)."""
 
@@ -26,6 +29,8 @@ class OnboardingRequest(BaseModel):
     sector: str = Field(min_length=1, max_length=40)
     location_name: str = Field(min_length=1, max_length=120)
     items: list[OnboardingItem] = Field(default_factory=list, max_length=40)
+    # Optional: lets the trader log in again with phone + PIN (BR-O3). Can also be set later.
+    pin: str | None = Field(default=None, pattern=PIN_PATTERN)
 
     @field_validator("items")
     @classmethod
@@ -53,3 +58,17 @@ class TraderOut(BaseModel):
 class OnboardingResponse(BaseModel):
     token: str
     trader: TraderOut
+
+
+class LoginRequest(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    phone: str = Field(min_length=7, max_length=20)
+    pin: str = Field(pattern=PIN_PATTERN)
+
+
+class ChangePinRequest(BaseModel):
+    """current_pin is required once a PIN exists; a trader without one sets it with new_pin alone."""
+
+    current_pin: str | None = Field(default=None, pattern=PIN_PATTERN)
+    new_pin: str = Field(pattern=PIN_PATTERN)

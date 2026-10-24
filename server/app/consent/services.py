@@ -1,10 +1,10 @@
 import hashlib
 import secrets
 from collections.abc import Iterable
-from datetime import UTC, date, datetime
+from datetime import date, datetime
 from decimal import Decimal
 
-from app.shared.periods import LAGOS
+from app.shared.periods import LAGOS, as_utc  # noqa: F401  (as_utc used by the orchestrator)
 
 # The agent summary covers the last 30 days (BR-K6).
 SUMMARY_PERIOD_DAYS = 30
@@ -22,11 +22,6 @@ def hash_secret(secret: str) -> str:
 
 def secrets_match(stored_hash: str, secret: str) -> bool:
     return secrets.compare_digest(stored_hash, hash_secret(secret))
-
-
-def as_utc(moment: datetime) -> datetime:
-    """SQLite returns naive datetimes; every stored moment is UTC."""
-    return moment if moment.tzinfo is not None else moment.replace(tzinfo=UTC)
 
 
 def duration_text(minutes: int) -> str:
