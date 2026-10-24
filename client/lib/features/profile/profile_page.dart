@@ -57,12 +57,19 @@ class ProfilePage extends StatelessWidget {
               const Text('API', style: TextStyle(fontWeight: FontWeight.w700, color: ojaInk)),
               const SizedBox(height: 6),
               Text(
-                liveApi ? 'Connected to live backend' : 'Local demo book (tests / offline)',
+                liveApi
+                    ? 'Live prototype API (profit, markets, entries, ask)'
+                    : 'Local demo book (tests / offline)',
                 style: const TextStyle(color: ojaMuted),
               ),
               if (apiBaseUrl != null) ...[
                 const SizedBox(height: 4),
                 Text(apiBaseUrl!, style: const TextStyle(color: ojaInk, fontSize: 13)),
+                const SizedBox(height: 4),
+                const Text(
+                  'Uses /reports/profit, /insights, /markets/recommend, /entries, /ask',
+                  style: TextStyle(color: ojaMuted, fontSize: 12),
+                ),
               ],
             ],
           ),

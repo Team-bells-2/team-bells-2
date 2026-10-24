@@ -1,6 +1,9 @@
-import 'package:flutter/material.dart';
-import 'package:speech_to_text/speech_to_text.dart';
+import 'dart:io';
 
+import 'package:flutter/material.dart';
+import 'package:record/record.dart';
+
+import '../../core/api/oja_api.dart';
 import '../../core/ledger/ledger.dart';
 import '../../core/theme.dart';
 
@@ -23,19 +26,21 @@ class AssistantPage extends StatefulWidget {
 class _AssistantPageState extends State<AssistantPage> {
   final _composer = TextEditingController();
   final _scroll = ScrollController();
-  SpeechToText? _speech;
-  var _listening = false;
+  final _recorder = AudioRecorder();
+  var _recording = false;
+  var _transcribing = false;
 
   @override
   void dispose() {
     _composer.dispose();
     _scroll.dispose();
+    _recorder.dispose();
     super.dispose();
   }
 
   Future<void> _send(String raw, {bool fromVoice = false}) async {
     final text = raw.trim();
-    if (text.isEmpty || widget.book.busy) return;
+    if (text.isEmpty || widget.book.busy || _transcribing) return;
     _composer.clear();
     setState(() {});
     await widget.book.sendAsync(text, fromVoice: fromVoice);
@@ -53,64 +58,97 @@ class _AssistantPageState extends State<AssistantPage> {
   }
 
   Future<void> _toggleMic() async {
-    if (_listening) {
-      await _speech?.stop();
-      if (!mounted) return;
-      setState(() => _listening = false);
-      _send(_composer.text, fromVoice: true);
+    if (!widget.book.isLive) {
+      _snack('Connect to the live API to use server transcription.');
+      return;
+    }
+    if (_transcribing || widget.book.busy) return;
+
+    if (_recording) {
+      await _stopAndTranscribe();
       return;
     }
 
-    _speech ??= SpeechToText();
+    final allowed = await _recorder.hasPermission();
+    if (!allowed) {
+      _snack('Microphone permission is required. Allow it in Settings.');
+      return;
+    }
+
     try {
-      final ready = await _speech!.initialize(
-        onStatus: (status) {
-          if (!mounted) return;
-          if (status == 'done' || status == 'notListening') {
-            setState(() => _listening = false);
-          }
-        },
-      );
-      if (!ready) {
-        _voiceUnavailable();
-        return;
-      }
-      if (!mounted) return;
-      setState(() => _listening = true);
-      await _speech!.listen(
-        onResult: (result) {
-          if (!mounted) return;
-          _composer.value = TextEditingValue(
-            text: result.recognizedWords,
-            selection: TextSelection.collapsed(offset: result.recognizedWords.length),
-          );
-          setState(() {});
-          if (result.finalResult) _send(result.recognizedWords, fromVoice: true);
-        },
-        listenOptions: SpeechListenOptions(
-          listenMode: ListenMode.dictation,
-          partialResults: true,
-          cancelOnError: true,
-          listenFor: const Duration(seconds: 12),
-          pauseFor: const Duration(seconds: 3),
+      final path = '${Directory.systemTemp.path}/oja_voice_${DateTime.now().millisecondsSinceEpoch}.wav';
+      await _recorder.start(
+        const RecordConfig(
+          encoder: AudioEncoder.wav,
+          numChannels: 1,
+          sampleRate: 16000,
         ),
+        path: path,
       );
+      if (!mounted) return;
+      setState(() => _recording = true);
     } catch (_) {
       if (!mounted) return;
-      setState(() => _listening = false);
-      _voiceUnavailable();
+      setState(() => _recording = false);
+      _snack('Could not start the microphone. Try again.');
     }
   }
 
-  void _voiceUnavailable() {
+  Future<void> _stopAndTranscribe() async {
+    String? path;
+    try {
+      path = await _recorder.stop();
+    } catch (_) {
+      path = null;
+    }
+    if (!mounted) return;
+    setState(() {
+      _recording = false;
+      _transcribing = true;
+    });
+
+    if (path == null || path.isEmpty) {
+      setState(() => _transcribing = false);
+      _snack('No audio captured. Hold a bit longer, then stop.');
+      return;
+    }
+
+    final file = File(path);
+    try {
+      final bytes = await file.readAsBytes();
+      if (bytes.isEmpty) {
+        _snack('Recording was empty. Try again.');
+        return;
+      }
+      final transcript = await widget.book.transcribeAudio(bytes, contentType: 'audio/wav');
+      if (!mounted) return;
+      _composer.text = transcript;
+      setState(() => _transcribing = false);
+      await _send(transcript, fromVoice: true);
+    } on OjaApiException catch (error) {
+      if (!mounted) return;
+      _snack(error.message);
+    } catch (_) {
+      if (!mounted) return;
+      _snack('Transcription failed. Type the message instead.');
+    } finally {
+      try {
+        if (await file.exists()) await file.delete();
+      } catch (_) {}
+      if (mounted) setState(() => _transcribing = false);
+    }
+  }
+
+  void _snack(String message) {
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(backgroundColor: ojaGreen, content: Text('Voice is not available here. Type the message.')),
+      SnackBar(backgroundColor: ojaGreen, content: Text(message)),
     );
   }
 
   @override
   Widget build(BuildContext context) {
     final showSamples = widget.book.lines.length == 1;
+    final micBusy = widget.book.busy || _transcribing;
     return Column(
       children: [
         const Padding(
@@ -141,7 +179,7 @@ class _AssistantPageState extends State<AssistantPage> {
                   Padding(
                     padding: const EdgeInsets.only(bottom: 8),
                     child: OutlinedButton(
-                      onPressed: () => _send(sample),
+                      onPressed: micBusy ? null : () => _send(sample),
                       style: OutlinedButton.styleFrom(
                         foregroundColor: ojaGreen,
                         side: const BorderSide(color: ojaGreen),
@@ -154,10 +192,15 @@ class _AssistantPageState extends State<AssistantPage> {
               ],
             ),
           ),
-        if (_listening)
+        if (_recording)
           const Padding(
             padding: EdgeInsets.only(bottom: 6),
-            child: Text('Listening…', style: TextStyle(color: ojaGreen, fontWeight: FontWeight.w600)),
+            child: Text('Recording… tap stop when done', style: TextStyle(color: ojaGreen, fontWeight: FontWeight.w600)),
+          ),
+        if (_transcribing)
+          const Padding(
+            padding: EdgeInsets.only(bottom: 6),
+            child: Text('Transcribing on server…', style: TextStyle(color: ojaGreen, fontWeight: FontWeight.w600)),
           ),
         if (widget.book.busy)
           const Padding(
@@ -169,19 +212,22 @@ class _AssistantPageState extends State<AssistantPage> {
           child: Row(
             children: [
               IconButton(
-                tooltip: _listening ? 'Stop' : 'Speak',
-                onPressed: widget.book.busy ? null : _toggleMic,
-                style: IconButton.styleFrom(backgroundColor: ojaGreen, foregroundColor: Colors.white),
-                icon: Icon(_listening ? Icons.stop : Icons.mic),
+                tooltip: _recording ? 'Stop' : 'Speak',
+                onPressed: micBusy && !_recording ? null : _toggleMic,
+                style: IconButton.styleFrom(
+                  backgroundColor: _recording ? ojaOut : ojaGreen,
+                  foregroundColor: Colors.white,
+                ),
+                icon: Icon(_recording ? Icons.stop : Icons.mic),
               ),
               const SizedBox(width: 8),
               Expanded(
                 child: TextField(
                   key: const Key('composer'),
                   controller: _composer,
-                  enabled: !widget.book.busy,
+                  enabled: !micBusy && !_recording,
                   textInputAction: TextInputAction.send,
-                  onSubmitted: _send,
+                  onSubmitted: (value) => _send(value),
                   style: const TextStyle(color: ojaInk),
                   decoration: InputDecoration(
                     hintText: 'Speak or type',
@@ -202,7 +248,7 @@ class _AssistantPageState extends State<AssistantPage> {
               IconButton(
                 key: const Key('send'),
                 tooltip: 'Send',
-                onPressed: widget.book.busy ? null : () => _send(_composer.text),
+                onPressed: micBusy || _recording ? null : () => _send(_composer.text),
                 style: IconButton.styleFrom(backgroundColor: ojaGreen, foregroundColor: Colors.white),
                 icon: const Icon(Icons.arrow_upward),
               ),

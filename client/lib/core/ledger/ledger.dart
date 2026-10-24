@@ -8,6 +8,28 @@ class ChatLine {
   final String text;
 }
 
+class InventoryLine {
+  InventoryLine({
+    required this.key,
+    required this.name,
+    required this.quantity,
+    required this.unit,
+    this.unitCostNgn = 0,
+    this.reorderLevel = 0,
+  });
+
+  final String key;
+  final String name;
+  final double quantity;
+  final String unit;
+  final double unitCostNgn;
+  final double reorderLevel;
+
+  bool get isLow => reorderLevel > 0 ? quantity <= reorderLevel : false;
+
+  int get valueNgn => (quantity * unitCostNgn).round();
+}
+
 enum EntryKind { cashSale, creditSale, payment, expense }
 
 class LedgerEntry {
@@ -336,11 +358,9 @@ String _reason(Offer offer, List<Offer> peers, int needed) {
   return 'Rated ${offer.rating} from ${offer.reviews} reviews.';
 }
 
-const _greeting = 'Tell me what you sold, who paid, or where you fit buy.';
-
 class OjaBook {
   final lines = <ChatLine>[
-    ChatLine(false, _greeting),
+    ChatLine(false, 'Tell me what you sold, who paid, or where you fit buy.'),
   ];
   final entries = <LedgerEntry>[];
   final stock = <String, double>{'rice': 10, 'beans': 8, 'garri': 14, 'oil': 6};
@@ -349,21 +369,21 @@ class OjaBook {
   _Draft? _pending;
   int _nextId = 1;
 
-  /// When set, home/assistant/inventory load from the OJA API (`server/`).
+  /// When set, home/assistant/inventory load from the live Render API.
   OjaApi? api;
+  String conversationId = 'oja-flutter';
   String? statusMessage;
   String? marketNotice;
+  String? profitPeriodLabel;
   List<RankedOffer> marketOffers = [];
+  /// Item names reported low by `GET /insights` (live API only).
+  List<String> apiLowStock = [];
+  List<InventoryLine> inventoryLines = [];
   bool busy = false;
   int? _apiSales;
   int? _apiExpenses;
   int? _apiProfit;
   int? _apiOwed;
-
-  /// Live only: units, low-stock flags and customer balances, all as computed by the server.
-  final stockUnits = <String, String>{};
-  final _lowStock = <String>{};
-  final _balances = <String, int>{};
 
   OjaBook();
 
@@ -374,41 +394,55 @@ class OjaBook {
     book.send('The rice woman don pay 30k');
     book.send('I sell 1 bag garri cash for Papa Emeka 50k');
     book.send('I buy 5 bags beans 40k');
+    book._syncInventoryLinesFromStock();
     return book;
   }
 
   factory OjaBook.live(OjaApi api) {
     final book = OjaBook();
     book.api = api;
-    book.stock.clear();
+    for (final item in stockItems) {
+      book.stock[item] = 0;
+    }
     return book;
   }
 
-  /// Items at or below their reorder level.
-  List<String> get lowItems {
-    if (isLive) return [for (final item in stock.keys) if (_lowStock.contains(item)) item];
-    return [
-      for (final item in reorderLevels.keys)
-        if ((stock[item] ?? 0) <= reorderLevels[item]!) item,
+  int get stockValueNgn => inventoryLines.fold(0, (sum, line) => sum + line.valueNgn);
+
+  int get activeItemCount => inventoryLines.where((line) => line.quantity > 0).length;
+
+  List<InventoryLine> get lowStockLines => inventoryLines.where((line) => line.isLow || apiLowStock.contains(line.key)).toList();
+
+  void _syncInventoryLinesFromStock() {
+    inventoryLines = [
+      for (final key in stockItems)
+        InventoryLine(
+          key: key,
+          name: itemTitle(key),
+          quantity: stock[key] ?? 0,
+          unit: key == 'oil' ? 'keg' : 'bag',
+          unitCostNgn: demoUnitCosts[key] ?? 0,
+          reorderLevel: reorderLevels[key] ?? 0,
+        ),
     ];
   }
 
-  bool isLow(String item) => isLive ? _lowStock.contains(item) : (stock[item] ?? 0) <= (reorderLevels[item] ?? 0);
-
-  String unitOf(String item) => stockUnits[item] ?? (item == 'oil' ? 'keg' : 'bag');
-
-  /// The customer who owes the most, or null when nobody owes.
-  String? get topDebtor {
-    String? name;
-    var highest = 0;
-    for (final customer in isLive ? _balances.keys.toList() : _customers()) {
-      final balance = balanceOf(customer);
-      if (balance > highest) {
-        highest = balance;
-        name = customer;
-      }
+  void _syncInventoryLinesFromApi(List<Map<String, dynamic>> rows) {
+    if (rows.isEmpty) {
+      inventoryLines = [];
+      return;
     }
-    return name;
+    inventoryLines = [
+      for (final row in rows)
+        InventoryLine(
+          key: (row['item'] as String? ?? '').toLowerCase(),
+          name: row['item'] as String? ?? 'Item',
+          quantity: (row['quantity_on_hand'] as num?)?.toDouble() ?? 0,
+          unit: row['unit'] as String? ?? 'bag',
+          unitCostNgn: (row['unit_cost_ngn'] as num?)?.toDouble() ?? 0,
+          reorderLevel: (row['reorder_level'] as num?)?.toDouble() ?? 0,
+        ),
+    ]..removeWhere((line) => line.key.isEmpty);
   }
 
   bool get isLive => api != null;
@@ -444,62 +478,55 @@ class OjaBook {
     busy = true;
     statusMessage = null;
     try {
-      final home = await client.getHome(period: 'today');
-      final today = await client.getEntries(period: 'today', limit: 200);
+      final profit = await client.getProfit();
+      final insights = await client.getInsights();
       final customers = await client.getCustomers();
+      final remoteEntries = await client.getEntries();
       final inventory = await client.getInventory();
 
-      _apiSales = (home['revenue_ngn'] as num?)?.round() ?? 0;
-      _apiExpenses = (home['expenses_ngn'] as num?)?.round() ?? 0;
-      _apiProfit = (home['profit_ngn'] as num?)?.round() ?? 0;
-      _apiOwed = (home['total_owed_ngn'] as num?)?.round() ?? 0;
+      _apiSales = (profit['sales_ngn'] as num?)?.toInt() ?? (insights['sales_ngn'] as num?)?.toInt() ?? 0;
+      _apiExpenses = (profit['expenses_ngn'] as num?)?.toInt() ?? 0;
+      _apiProfit = (profit['estimated_profit_ngn'] as num?)?.toInt() ??
+          (insights['estimated_profit_ngn'] as num?)?.toInt() ??
+          0;
+      _apiOwed = customers.fold<int>(0, (sum, row) => sum + ((row['amount_owed_ngn'] as num?)?.toInt() ?? 0));
+
+      final period = insights['period'] is Map ? Map<String, dynamic>.from(insights['period'] as Map) : const <String, dynamic>{};
+      final start = profit['start_date'] as String? ?? period['start_date'] as String?;
+      final end = profit['end_date'] as String? ?? period['end_date'] as String?;
+      profitPeriodLabel = (start != null && end != null) ? '$start → $end' : null;
+
+      final lowRows = insights['low_stock_items'];
+      apiLowStock = [
+        if (lowRows is List)
+          for (final row in lowRows)
+            if (row is Map && row['item'] is String) (row['item'] as String).toLowerCase(),
+      ];
 
       entries
         ..clear()
-        ..addAll(today.reversed.map(_entryFromApi));
+        ..addAll(remoteEntries.reversed.map(_entryFromApi));
       _nextId = entries.fold(1, (maxId, entry) => entry.id >= maxId ? entry.id + 1 : maxId);
 
-      _balances
-        ..clear()
-        ..addEntries(customers.map((row) => MapEntry(
-              row['canonical_name'] as String? ?? '',
-              (row['balance_ngn'] as num?)?.round() ?? 0,
-            )));
-
-      stock.clear();
-      stockUnits.clear();
-      _lowStock.clear();
+      for (final item in stockItems) {
+        stock[item] = 0;
+      }
       for (final row in inventory) {
-        final name = (row['name'] as String? ?? '').toLowerCase();
+        final name = (row['item'] as String? ?? '').toLowerCase();
         if (name.isEmpty) continue;
         stock[name] = (row['quantity_on_hand'] as num?)?.toDouble() ?? 0;
-        stockUnits[name] = row['unit'] as String? ?? 'bag';
-        if (row['low_stock'] == true) _lowStock.add(name);
+        if (!stockItems.contains(name)) {
+          stock.putIfAbsent(name, () => (row['quantity_on_hand'] as num?)?.toDouble() ?? 0);
+        }
       }
-      if (!stock.containsKey(marketItem) && stock.isNotEmpty) marketItem = stock.keys.first;
-      await loadMarketOffers(lowItems.isNotEmpty ? lowItems.first : marketItem);
+      _syncInventoryLinesFromApi(inventory);
+      await loadMarketOffers(marketItem);
     } on OjaApiException catch (error) {
       statusMessage = error.message;
       rethrow;
     } finally {
       busy = false;
     }
-  }
-
-  /// Restores the assistant chat from the server after a restart: the greeting, then the stored turns.
-  Future<void> loadChatHistory() async {
-    final client = api;
-    if (client == null) return;
-    final result = await client.getChatHistory();
-    final rows = result['messages'];
-    if (rows is! List) return;
-    lines
-      ..clear()
-      ..add(ChatLine(false, _greeting))
-      ..addAll([
-        for (final row in rows)
-          if (row is Map && row['text'] is String) ChatLine(row['role'] == 'trader', row['text'] as String),
-      ]);
   }
 
   Future<void> loadMarketOffers(String itemKey) async {
@@ -510,42 +537,70 @@ class OjaBook {
       return;
     }
     marketItem = itemKey;
+    final product = marketProductByItem[itemKey] ?? itemKey;
+    final needed = reorderLevels[itemKey] ?? 5;
     try {
-      final result = await client.getSuggestions(itemKey);
-      marketNotice = result['data_label'] as String? ?? 'Demo data';
-      final rows = result['suggestions'];
-      marketOffers = [
-        if (rows is List)
-          for (final row in rows.take(3)) _offerFromSuggestion(Map<String, dynamic>.from(row as Map)),
+      final result = await client.recommendMarkets(product: product, quantity: needed);
+      marketNotice = result['data_notice'] as String? ?? 'Market prices from OJA API.';
+      final ranked = result['ranked_offers'];
+      final demos = result['demo_comparisons'];
+      final rows = <Map<String, dynamic>>[
+        if (ranked is List) ...ranked.map((e) => Map<String, dynamic>.from(e as Map)),
+        if (demos is List) ...demos.map((e) => Map<String, dynamic>.from(e as Map)),
       ];
-      if (marketOffers.isEmpty) marketNotice = 'No suppliers for ${itemTitle(itemKey)} yet.';
+      marketOffers = [
+        for (final row in rows.take(3)) _offerFromMarket(row),
+      ];
+      if (marketOffers.isEmpty) {
+        marketNotice = 'No market offers for $product yet.';
+      }
     } on OjaApiException catch (error) {
       marketOffers = [];
       marketNotice = error.message;
     }
   }
 
-  RankedOffer _offerFromSuggestion(Map<String, dynamic> row) {
+  RankedOffer _offerFromMarket(Map<String, dynamic> row) {
+    final reviews = row['community_reviews'];
+    final reviewMap = reviews is Map ? Map<String, dynamic>.from(reviews) : const <String, dynamic>{};
+    final rating = (reviewMap['average_rating'] as num?)?.toDouble() ?? 0;
+    final count = (reviewMap['review_count'] as num?)?.toInt() ?? 0;
+    final status = row['data_status'] as String? ?? '';
     final offer = Offer(
-      item: marketItem,
-      supplier: row['supplier_name'] as String? ?? 'Supplier',
+      item: row['product'] as String? ?? marketItem,
+      supplier: row['market'] as String? ?? 'Market',
       area: row['area'] as String? ?? '',
-      km: (row['distance_km'] as num?)?.toDouble() ?? 0,
-      price: (row['unit_price_ngn'] as num?)?.round() ?? 0,
+      km: 0,
+      price: (row['unit_price_ngn'] as num?)?.toInt() ?? 0,
       unit: row['unit'] as String? ?? 'bag',
-      rating: (row['average_rating'] as num?)?.toDouble() ?? 0,
-      reviews: (row['review_count'] as num?)?.toInt() ?? 0,
-      grade: row['quality_grade'] as String? ?? '',
-      available: (row['quantity_available'] as num?)?.toInt() ?? 0,
+      rating: rating,
+      reviews: count,
+      grade: status == 'source_snapshot' ? 'A' : 'Demo',
+      available: 999,
     );
-    return RankedOffer(offer, row['reason'] as String? ?? '');
+    final reason = status == 'source_snapshot'
+        ? (row['source_name'] as String? ?? 'Live market price.')
+        : 'Demo comparison.';
+    return RankedOffer(offer, reason);
+  }
+
+  /// Upload audio bytes to `POST /transcribe` and return the transcript text.
+  Future<String> transcribeAudio(List<int> bytes, {String contentType = 'audio/wav'}) async {
+    final client = api;
+    if (client == null) {
+      throw OjaApiException(0, 'Live API is not connected.');
+    }
+    final result = await client.transcribe(bytes, contentType: contentType);
+    final text = (result['text'] as String?)?.trim() ?? '';
+    if (text.isEmpty) {
+      throw OjaApiException(502, 'Could not hear that. Try again or type.');
+    }
+    return text;
   }
 
   /// Live API path for the assistant. Falls back to local rules when [api] is null.
   ///
-  /// Questions ("Who owes me?", "Where I fit buy rice?") go to `POST /ask`. Everything else,
-  /// typed or spoken ([fromVoice]: transcribed on the phone), goes to `POST /messages`,
-  /// where the server reads it, saves it and moves stock.
+  /// [fromVoice]: use `/messages` (voice/AI pipeline). Typed text uses `POST /entries`.
   Future<void> sendAsync(String raw, {bool fromVoice = false}) async {
     final text = raw.trim();
     if (text.isEmpty) return;
@@ -555,17 +610,36 @@ class OjaBook {
     }
 
     lines.add(ChatLine(true, text));
+    final normalized = _norm(text);
     busy = true;
     statusMessage = null;
     try {
-      if (_isQuestion(_norm(text))) {
+      if (_isWho(normalized)) {
         final result = await api!.ask(text);
-        final answer = (result['answer'] as String?)?.trim();
-        lines.add(ChatLine(false, answer == null || answer.isEmpty ? 'I do not have an answer for that yet.' : answer));
-      } else {
-        final result = await api!.sendMessage(text);
-        lines.add(ChatLine(false, _formatRemoteMessage(result)));
+        lines.add(ChatLine(false, (result['answer'] as String?)?.trim().isNotEmpty == true
+            ? result['answer'] as String
+            : 'Nobody owes you.'));
+        await refreshFromApi();
+        return;
       }
+      if (_isWhere(normalized)) {
+        lines.add(ChatLine(false, await _whereRemote(text)));
+        return;
+      }
+
+      if (fromVoice) {
+        try {
+          final result = await api!.sendMessage(text: text, conversationId: conversationId);
+          lines.add(ChatLine(false, _formatRemoteMessage(result)));
+          await refreshFromApi();
+          return;
+        } on OjaApiException catch (error) {
+          // Voice AI unavailable (e.g. missing OPENAI_API_KEY) — fall back to text entries.
+          statusMessage = error.message;
+        }
+      }
+
+      lines.add(ChatLine(false, await _saveTextEntry(text)));
       await refreshFromApi();
     } on OjaApiException catch (error) {
       statusMessage = error.message;
@@ -575,23 +649,128 @@ class OjaBook {
     }
   }
 
-  /// The server's own confirmation or question, plus a note when stock did not move.
-  String _formatRemoteMessage(Map<String, dynamic> result) {
-    final message = (result['message'] as String?)?.trim();
-    final buf = StringBuffer(message == null || message.isEmpty ? 'Saved.' : message);
-    final entry = result['entry'];
-    final item = entry is Map ? entry['item'] as String? : null;
-    final label = item == null ? 'This item' : itemTitle(item);
-    final flags = result['flags'];
-    if (flags is List) {
-      if (flags.contains('not_in_inventory')) {
-        buf.write('\n$label is not in your inventory, so stock did not change.');
-      }
-      if (flags.contains('check_stock')) {
-        buf.write('\nCheck stock: not enough $label on hand (or a different unit), so stock did not change.');
+  Future<String> _whereRemote(String text) async {
+    marketItem = _itemIn(text)?.$2 ?? marketItem;
+    await loadMarketOffers(marketItem);
+    if (marketOffers.isEmpty) {
+      return marketNotice ?? 'No market offers yet.';
+    }
+    final body = marketOffers.map((row) {
+      final offer = row.offer;
+      final price = naira(offer.price);
+      final place = offer.area.isEmpty ? offer.supplier : '${offer.supplier}, ${offer.area}';
+      return '$place · $price a ${offer.unit}. ${row.reason}';
+    }).join('\n');
+    return 'For ${itemTitle(marketItem)} (${marketProductByItem[marketItem] ?? marketItem}):\n$body';
+  }
+
+  Future<String> _saveTextEntry(String text) async {
+    if (_isCorrection(_norm(text))) {
+      return 'Corrections need the voice path (/messages). For typed text, send a full new entry.';
+    }
+
+    final draft = _pending != null && !_isNewCommand(_norm(text))
+        ? _mergePending(text)
+        : _extract(text);
+
+    if (draft.kind == null) {
+      _pending = null;
+      return 'I did not catch that. Tell me what you sold, who paid, or where you fit buy.';
+    }
+
+    final question = _missing(draft);
+    if (question != null) {
+      _pending = draft;
+      return question;
+    }
+    _pending = null;
+
+    final payload = _entryPayload(draft);
+    final saved = await api!.createEntry(payload);
+
+    if (draft.kind == EntryKind.expense && draft.itemLabel != null && draft.quantity != null && draft.amountNgn != null) {
+      final unitCost = (draft.amountNgn! / draft.quantity!).round();
+      try {
+        await api!.stockIn({
+          'item': draft.itemLabel,
+          'quantity': draft.quantity,
+          'unit': _apiUnit(draft.unit) ?? 'bag',
+          'unit_cost_ngn': unitCost < 0 ? 0 : unitCost,
+          'reorder_level': reorderLevels[draft.itemKey] ?? 0,
+        });
+      } on OjaApiException {
+        // Entry already saved; stock-in is best-effort for buys.
       }
     }
-    return buf.toString();
+
+    return _confirm(_entryFromApi(saved), updated: false);
+  }
+
+  _Draft _mergePending(String text) {
+    final pending = _pending!;
+    final patch = _extract(text);
+    pending.kind ??= patch.kind;
+    pending.itemKey ??= patch.itemKey;
+    pending.itemLabel ??= patch.itemLabel;
+    pending.unit ??= patch.unit;
+    pending.customer ??= patch.customer;
+    if (patch.quantity != null) {
+      pending.quantity = patch.quantity;
+      pending.unit = patch.unit ?? pending.unit;
+    }
+    if (patch.amountNgn != null) pending.amountNgn = patch.amountNgn;
+    pending.rawText = '${pending.rawText} $text'.trim();
+    return pending;
+  }
+
+  Map<String, dynamic> _entryPayload(_Draft draft) {
+    final type = switch (draft.kind) {
+      EntryKind.creditSale => 'credit_sale',
+      EntryKind.payment => 'payment_received',
+      EntryKind.expense => 'expense',
+      _ => 'sale',
+    };
+    return {
+      'type': type,
+      if (draft.itemLabel != null) 'item': draft.itemLabel,
+      if (draft.quantity != null) 'quantity': draft.quantity,
+      if (draft.unit != null) 'unit': _apiUnit(draft.unit),
+      'amount_ngn': draft.amountNgn ?? 0,
+      if (draft.customer != null) 'customer': draft.customer,
+      'confidence': 0.85,
+      'raw_text': draft.rawText,
+    };
+  }
+
+  String? _apiUnit(String? unit) {
+    if (unit == null) return null;
+    final value = unit.toLowerCase();
+    if (value.startsWith('bag')) return 'bag';
+    if (value.startsWith('keg')) return 'keg';
+    return unit;
+  }
+
+  String _formatRemoteMessage(Map<String, dynamic> result) {
+    final status = result['status'];
+    if (status == 'needs_clarification') {
+      return (result['question'] as String?)?.trim().isNotEmpty == true
+          ? result['question'] as String
+          : 'Tell me a bit more.';
+    }
+    if (status == 'corrected' || status == 'recorded') {
+      final entry = result['entry'];
+      if (entry is Map) {
+        final mapped = _entryFromApi(Map<String, dynamic>.from(entry));
+        return _confirm(mapped, updated: status == 'corrected');
+      }
+      final action = result['action'];
+      if (action is Map) {
+        final item = action['item'] ?? 'stock';
+        final qty = action['quantity_on_hand'] ?? action['quantity'];
+        return 'Saved. $item is now $qty.';
+      }
+    }
+    return 'Saved.';
   }
 
   LedgerEntry _entryFromApi(Map<String, dynamic> row) {
@@ -618,7 +797,6 @@ class OjaBook {
   }
 
   int balanceOf(String customer) {
-    if (isLive) return _balances[customer] ?? 0;
     var balance = 0;
     for (final entry in entries) {
       if (entry.customer != customer) continue;
@@ -822,13 +1000,6 @@ bool _isWhere(String text) {
   return text.contains('where') && (text.contains('buy') || text.contains('restock') || text.contains('fit'));
 }
 
-bool _isQuestion(String text) {
-  return _isWho(text) ||
-      _isWhere(text) ||
-      text.endsWith('?') ||
-      RegExp(r'^(who|how much|how many|wetin|what|which|where)\b').hasMatch(text);
-}
-
 bool _isCorrection(String text) {
   return text.startsWith('no') || text.contains('i mean') || text.contains('make am');
 }
@@ -848,7 +1019,31 @@ int? _amount(String text) {
 
   final symbol = RegExp(r'₦\s*(\d{1,3}(?:,\d{3})+|\d+)').firstMatch(text);
   if (symbol != null) return int.parse(symbol.group(1)!.replaceAll(',', ''));
-  return null;
+
+  // Bare naira for traders: "2000", "2,000", or a clarify reply that is only digits.
+  final onlyNumber = RegExp(r'^(\d{1,3}(?:,\d{3})+|\d+)$').firstMatch(text);
+  if (onlyNumber != null) return int.parse(onlyNumber.group(1)!.replaceAll(',', ''));
+
+  final tagged = RegExp(
+    r'\b(?:for|at|na|cost|price|collect|pay|paid|spend|spent)\s+(\d{1,3}(?:,\d{3})+|\d+)\b',
+  ).firstMatch(text);
+  if (tagged != null) return int.parse(tagged.group(1)!.replaceAll(',', ''));
+
+  // Last money-like number that is not a bag/keg/tin count (e.g. "sell 2 bags … 5000").
+  final candidates = RegExp(r'\b(\d{1,3}(?:,\d{3})+|\d+)\b').allMatches(text).where((match) {
+    final after = text.substring(match.end).trimLeft();
+    if (RegExp(r'^(bags?|kegs?|tins?)\b').hasMatch(after)) return false;
+    if (RegExp(r'^k\b').hasMatch(after)) return false;
+    return true;
+  }).toList();
+  if (candidates.isEmpty) return null;
+
+  for (final match in candidates.reversed) {
+    final raw = match.group(1)!;
+    final value = int.parse(raw.replaceAll(',', ''));
+    if (raw.contains(',') || value >= 100) return value;
+  }
+  return int.parse(candidates.last.group(1)!.replaceAll(',', ''));
 }
 
 (double, String)? _quantity(String text) {

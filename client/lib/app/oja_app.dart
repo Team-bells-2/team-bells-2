@@ -141,6 +141,7 @@ class _OjaAppState extends State<OjaApp> {
                           AssistantPage(book: _book, onChanged: _onBookChanged),
                           InventoryPage(
                             book: _book,
+                            onRefresh: _live ? _refresh : null,
                             onItem: (item) async {
                               if (_live) {
                                 await _book.loadMarketOffers(item);
@@ -180,7 +181,14 @@ class _NavBar extends StatelessWidget {
           child: Row(
             children: [
               _NavButton(label: 'Home', icon: Icons.home_outlined, selectedIcon: Icons.home, selected: index == 0, onTap: () => onSelect(0)),
-              _MicButton(selected: index == 1, onTap: () => onSelect(1)),
+              _NavButton(
+                label: 'Assistant',
+                icon: Icons.mic_none,
+                selectedIcon: Icons.mic,
+                selected: index == 1,
+                buttonKey: const Key('tab-assistant'),
+                onTap: () => onSelect(1),
+              ),
               _NavButton(
                 label: 'Inventory',
                 icon: Icons.inventory_2_outlined,
@@ -234,43 +242,6 @@ class _NavButton extends StatelessWidget {
             Icon(selected ? selectedIcon : icon, color: color, size: 22),
             const SizedBox(height: 2),
             Text(label, style: TextStyle(color: color, fontSize: 11, fontWeight: selected ? FontWeight.w600 : FontWeight.w500)),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _MicButton extends StatelessWidget {
-  const _MicButton({required this.selected, required this.onTap});
-
-  final bool selected;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    return Expanded(
-      child: InkWell(
-        key: const Key('tab-assistant'),
-        onTap: onTap,
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Container(
-              width: 42,
-              height: 42,
-              decoration: const BoxDecoration(color: ojaGreen, shape: BoxShape.circle),
-              child: const Icon(Icons.mic, color: Colors.white, size: 22),
-            ),
-            const SizedBox(height: 2),
-            Text(
-              'Assistant',
-              style: TextStyle(
-                color: selected ? ojaGreen : ojaMuted,
-                fontSize: 11,
-                fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
-              ),
-            ),
           ],
         ),
       ),

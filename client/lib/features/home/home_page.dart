@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../core/catalog.dart';
 import '../../core/ledger/ledger.dart';
 import '../../core/theme.dart';
 import '../../core/widgets/oja_card.dart';
@@ -20,8 +21,14 @@ class HomePage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final low = book.lowItems;
-    final debtor = book.topDebtor;
+    final low = book.isLive
+        ? book.apiLowStock
+        : [
+            for (final item in reorderLevels.keys)
+              if ((book.stock[item] ?? 0) <= reorderLevels[item]!) item,
+          ];
+    final debtor = _topDebtor(book);
+    final periodDetail = book.profitPeriodLabel ?? (book.isLive ? 'From API' : 'Today');
     final body = ListView(
       padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
       children: [
@@ -42,7 +49,7 @@ class HomePage extends StatelessWidget {
                 children: [
                   const Text('NET PROFIT', style: TextStyle(color: ojaMuted, fontSize: 12, fontWeight: FontWeight.w600, letterSpacing: 0.4)),
                   const Spacer(),
-                  Text('${book.profit < 0 ? '' : '+'}${naira(book.profit)}', style: const TextStyle(color: ojaGreen, fontWeight: FontWeight.w700)),
+                  Text('+${naira(book.profit)}', style: const TextStyle(color: ojaGreen, fontWeight: FontWeight.w700)),
                 ],
               ),
               const SizedBox(height: 6),
@@ -58,7 +65,7 @@ class HomePage extends StatelessWidget {
         const SizedBox(height: 10),
         Row(
           children: [
-            Expanded(child: _MiniStat(label: 'Total expenses', value: naira(book.expenses), detail: 'Today')),
+            Expanded(child: _MiniStat(label: 'Total expenses', value: naira(book.expenses), detail: periodDetail)),
             const SizedBox(width: 10),
             Expanded(child: _MiniStat(label: 'Customer debt', value: naira(book.owed), detail: debtor ?? 'Nobody owes you')),
           ],
@@ -124,23 +131,20 @@ class _RestockCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final ranked = book.isLive
-        ? (book.marketItem == item ? book.marketOffers : const <RankedOffer>[])
+    final ranked = book.isLive && book.marketOffers.isNotEmpty && book.marketItem == item
+        ? book.marketOffers
         : rankOffers(item);
-    final offer = ranked.isEmpty ? null : ranked.first.offer;
-    final baseUnit = offer?.unit ?? book.unitOf(item);
-    final unit = left == 1 ? baseUnit : (baseUnit.endsWith('s') ? baseUnit : '${baseUnit}s');
-    final place = offer == null ? '' : (offer.km > 0 ? '${offer.supplier}  ·  ${offer.km} km  ·  ' : '${offer.supplier}  ·  ');
+    final offer = ranked.first.offer;
+    final unit = left == 1 ? offer.unit : (offer.unit.endsWith('s') ? offer.unit : '${offer.unit}s');
+    final place = offer.km > 0 ? '${offer.supplier}  ·  ${offer.km} km  ·  ' : '${offer.supplier}  ·  ';
     return OjaCard(
       color: ojaGreenSoft,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text('${itemTitle(item)} is low  ·  ${formatQty(left)} $unit left', style: const TextStyle(fontWeight: FontWeight.w700, color: ojaInk)),
-          if (offer != null) ...[
-            const SizedBox(height: 6),
-            Text('$place${naira(offer.price)}  ·  Grade ${offer.grade}', style: const TextStyle(color: ojaInk)),
-          ],
+          const SizedBox(height: 6),
+          Text('$place${naira(offer.price)}  ·  Grade ${offer.grade}', style: const TextStyle(color: ojaInk)),
           Align(
             alignment: Alignment.centerLeft,
             child: TextButton(
@@ -233,4 +237,20 @@ String _kindLabel(EntryKind kind) {
     EntryKind.payment => 'Payment',
     EntryKind.expense => 'Expense',
   };
+}
+
+String? _topDebtor(OjaBook book) {
+  String? name;
+  var highest = 0;
+  final seen = <String>{};
+  for (final entry in book.entries) {
+    final customer = entry.customer;
+    if (customer == null || !seen.add(customer)) continue;
+    final balance = book.balanceOf(customer);
+    if (balance > highest) {
+      highest = balance;
+      name = customer;
+    }
+  }
+  return name;
 }
