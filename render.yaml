@@ -12,17 +12,15 @@ services:
   - type: web
     name: oja-api
     runtime: python
-    plan: starter
+    plan: free
     buildCommand: pip install -r requirements.txt
-    # Migrations, then the reference data (markets and demo suppliers; safe to rerun).
-    preDeployCommand: >-
+    # Free plan: no pre-deploy step, so each start runs the migrations and the reference seed
+    # (markets and demo suppliers; safe to rerun), then the API. One worker: the WebSocket hub is in memory.
+    startCommand: >-
       export DATABASE_URL="$(echo "$DATABASE_URL" | sed -E 's#^postgres(ql)?://#postgresql+psycopg://#')"
       && alembic upgrade head
       && cd server && python -m app.demo.index
-    # One worker: the WebSocket hub is in memory.
-    startCommand: >-
-      export DATABASE_URL="$(echo "$DATABASE_URL" | sed -E 's#^postgres(ql)?://#postgresql+psycopg://#')"
-      && cd server && uvicorn app.main:app --host 0.0.0.0 --port $PORT
+      && uvicorn app.main:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /health
     envVars:
       - key: PYTHON_VERSION
