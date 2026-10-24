@@ -6,19 +6,27 @@ import '../../core/theme.dart';
 import '../../core/widgets/oja_card.dart';
 
 class InventoryPage extends StatelessWidget {
-  const InventoryPage({super.key, required this.book, required this.onItem});
+  const InventoryPage({
+    super.key,
+    required this.book,
+    required this.onItem,
+  });
 
   final OjaBook book;
   final ValueChanged<String> onItem;
 
   @override
   Widget build(BuildContext context) {
-    final ranked = rankOffers(book.marketItem);
+    final ranked = book.isLive ? book.marketOffers : rankOffers(book.marketItem);
+    final notice = book.isLive ? (book.marketNotice ?? 'Loading market prices…') : 'Demo prices.';
     return ListView(
       padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
       children: [
         const Text('Inventory', style: TextStyle(fontSize: 26, fontWeight: FontWeight.w700, color: ojaInk)),
-        const Text('Mile 12 Market', style: TextStyle(color: ojaMuted)),
+        Text(
+          book.isLive ? 'Mile 12 Market · live API' : 'Mile 12 Market',
+          style: const TextStyle(color: ojaMuted),
+        ),
         const SizedBox(height: 14),
         for (final item in stockItems)
           _StockTile(
@@ -31,9 +39,12 @@ class InventoryPage extends StatelessWidget {
         const SizedBox(height: 8),
         Text('Where to buy ${itemTitle(book.marketItem)}', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
         const SizedBox(height: 4),
-        const Text('Demo prices.', style: TextStyle(color: ojaMuted)),
+        Text(notice, style: const TextStyle(color: ojaMuted, fontSize: 13)),
         const SizedBox(height: 10),
-        for (final row in ranked) _OfferTile(row: row),
+        if (ranked.isEmpty)
+          const Text('No market offers yet.', style: TextStyle(color: ojaMuted))
+        else
+          for (final row in ranked) _OfferTile(row: row, showDistance: !book.isLive),
       ],
     );
   }
@@ -94,13 +105,17 @@ class _StockTile extends StatelessWidget {
 }
 
 class _OfferTile extends StatelessWidget {
-  const _OfferTile({required this.row});
+  const _OfferTile({required this.row, this.showDistance = true});
 
   final RankedOffer row;
+  final bool showDistance;
 
   @override
   Widget build(BuildContext context) {
     final offer = row.offer;
+    final place = showDistance && offer.km > 0
+        ? '${offer.area}  ·  ${offer.km} km'
+        : offer.area;
     return Padding(
       padding: const EdgeInsets.only(bottom: 10),
       child: OjaCard(
@@ -108,10 +123,16 @@ class _OfferTile extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(offer.supplier, style: const TextStyle(fontWeight: FontWeight.w700, color: ojaInk)),
+            if (place.isNotEmpty) ...[
+              const SizedBox(height: 4),
+              Text(place, style: const TextStyle(color: ojaMuted)),
+            ],
             const SizedBox(height: 4),
-            Text('${offer.area}  ·  ${offer.km} km', style: const TextStyle(color: ojaMuted)),
-            const SizedBox(height: 4),
-            Text('${naira(offer.price)} a ${offer.unit}  ·  Grade ${offer.grade}  ·  ${offer.rating}', style: const TextStyle(color: ojaInk)),
+            Text(
+              '${naira(offer.price)} a ${offer.unit}  ·  Grade ${offer.grade}'
+              '${offer.rating > 0 ? '  ·  ${offer.rating}' : ''}',
+              style: const TextStyle(color: ojaInk),
+            ),
             const SizedBox(height: 6),
             Text(row.reason, style: const TextStyle(color: ojaGreen, fontWeight: FontWeight.w600)),
           ],

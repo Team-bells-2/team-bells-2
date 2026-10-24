@@ -14,6 +14,9 @@ class OjaApiException implements Exception {
 }
 
 /// Thin client for the live Render API (`backend.py` contract).
+///
+/// Text ledger writes use [createEntry] (`POST /entries`).
+/// Voice uses [transcribe] then [sendMessage] (`/transcribe`, `/messages`).
 class OjaApi {
   OjaApi({this.baseUrl = ojaApiBaseUrl, HttpClient? client}) : _client = client ?? HttpClient();
 
@@ -40,10 +43,36 @@ class OjaApi {
     return _getJsonList('/inventory');
   }
 
+  Future<Map<String, dynamic>> getMarkets() async {
+    return _getJson('/markets');
+  }
+
+  Future<Map<String, dynamic>> recommendMarkets({
+    required String product,
+    required double quantity,
+    String priority = 'balanced',
+  }) async {
+    return _postJson('/markets/recommend', {
+      'product': product,
+      'quantity': quantity,
+      'priority': priority,
+    });
+  }
+
   Future<Map<String, dynamic>> ask(String question) async {
     return _postJson('/ask', {'question': question});
   }
 
+  /// Structured text entry — use for typed assistant input.
+  Future<Map<String, dynamic>> createEntry(Map<String, dynamic> entry) async {
+    return _postJson('/entries', entry);
+  }
+
+  Future<Map<String, dynamic>> stockIn(Map<String, dynamic> body) async {
+    return _postJson('/inventory/stock-in', body);
+  }
+
+  /// AI / conversation path — use after voice transcription.
   Future<Map<String, dynamic>> sendMessage({
     required String text,
     required String conversationId,
@@ -52,6 +81,28 @@ class OjaApi {
       'text': text,
       'conversation_id': conversationId,
     });
+  }
+
+  /// Upload raw audio bytes to local Whisper on the server.
+  Future<Map<String, dynamic>> transcribe(List<int> audio, {String contentType = 'audio/m4a'}) async {
+    final uri = Uri.parse('$baseUrl/transcribe');
+    late final HttpClientRequest request;
+    try {
+      request = await _client.postUrl(uri);
+    } on SocketException catch (error) {
+      throw OjaApiException(0, 'Cannot reach OJA API: ${error.message}');
+    }
+    request.headers.set(HttpHeaders.acceptHeader, 'application/json');
+    request.headers.set(HttpHeaders.contentTypeHeader, contentType);
+    request.add(audio);
+    final response = await request.close().timeout(const Duration(seconds: 90));
+    final raw = await response.transform(utf8.decoder).join();
+    final decoded = raw.isEmpty ? null : jsonDecode(raw);
+    if (response.statusCode >= 200 && response.statusCode < 300) {
+      if (decoded is Map<String, dynamic>) return decoded;
+      throw OjaApiException(500, 'Unexpected response from /transcribe.');
+    }
+    throw OjaApiException(response.statusCode, _errorMessage(decoded, response.statusCode));
   }
 
   Future<Map<String, dynamic>> _getJson(String path) async {
@@ -107,6 +158,7 @@ class OjaApi {
     if (decoded is Map) {
       final detail = decoded['detail'];
       if (detail is String && detail.isNotEmpty) return detail;
+      if (detail is Map && detail['message'] is String) return detail['message'] as String;
       if (detail is List && detail.isNotEmpty) {
         final first = detail.first;
         if (first is Map && first['msg'] is String) return first['msg'] as String;

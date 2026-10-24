@@ -66,11 +66,14 @@ class _OjaAppState extends State<OjaApp> {
     }
   }
 
-  void _openRestock(String item) {
-    setState(() {
+  Future<void> _openRestock(String item) async {
+    if (_live) {
+      await _book.loadMarketOffers(item);
+    } else {
       _book.marketItem = item;
-      _tab = 2;
-    });
+    }
+    if (!mounted) return;
+    setState(() => _tab = 2);
   }
 
   void _onBookChanged() => setState(() {});
@@ -133,7 +136,14 @@ class _OjaAppState extends State<OjaApp> {
                           AssistantPage(book: _book, onChanged: _onBookChanged),
                           InventoryPage(
                             book: _book,
-                            onItem: (item) => setState(() => _book.marketItem = item),
+                            onItem: (item) async {
+                              if (_live) {
+                                await _book.loadMarketOffers(item);
+                              } else {
+                                _book.marketItem = item;
+                              }
+                              if (mounted) setState(() {});
+                            },
                           ),
                           ProfilePage(liveApi: _live, apiBaseUrl: _api?.baseUrl),
                         ],

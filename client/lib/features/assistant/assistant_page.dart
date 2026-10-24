@@ -33,12 +33,12 @@ class _AssistantPageState extends State<AssistantPage> {
     super.dispose();
   }
 
-  Future<void> _send(String raw) async {
+  Future<void> _send(String raw, {bool fromVoice = false}) async {
     final text = raw.trim();
     if (text.isEmpty || widget.book.busy) return;
     _composer.clear();
     setState(() {});
-    await widget.book.sendAsync(text);
+    await widget.book.sendAsync(text, fromVoice: fromVoice);
     if (!mounted) return;
     widget.onChanged();
     setState(() {});
@@ -57,7 +57,7 @@ class _AssistantPageState extends State<AssistantPage> {
       await _speech?.stop();
       if (!mounted) return;
       setState(() => _listening = false);
-      _send(_composer.text);
+      _send(_composer.text, fromVoice: true);
       return;
     }
 
@@ -85,7 +85,7 @@ class _AssistantPageState extends State<AssistantPage> {
             selection: TextSelection.collapsed(offset: result.recognizedWords.length),
           );
           setState(() {});
-          if (result.finalResult) _send(result.recognizedWords);
+          if (result.finalResult) _send(result.recognizedWords, fromVoice: true);
         },
         listenOptions: SpeechListenOptions(
           listenMode: ListenMode.dictation,

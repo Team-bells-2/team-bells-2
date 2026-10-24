@@ -97,7 +97,12 @@ class HomePage extends StatelessWidget {
         ),
         if (low.isNotEmpty) ...[
           const SizedBox(height: 10),
-          _RestockCard(item: low.first, left: book.stock[low.first] ?? 0, onOpen: () => onRestock(low.first)),
+          _RestockCard(
+            item: low.first,
+            left: book.stock[low.first] ?? 0,
+            onOpen: () => onRestock(low.first),
+            book: book,
+          ),
         ],
         const SizedBox(height: 18),
         Text('Items logged  ${book.entries.length}', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700, color: ojaInk)),
@@ -114,16 +119,21 @@ class HomePage extends StatelessWidget {
 }
 
 class _RestockCard extends StatelessWidget {
-  const _RestockCard({required this.item, required this.left, required this.onOpen});
+  const _RestockCard({required this.item, required this.left, required this.onOpen, required this.book});
 
   final String item;
   final double left;
   final VoidCallback onOpen;
+  final OjaBook book;
 
   @override
   Widget build(BuildContext context) {
-    final offer = rankOffers(item).first.offer;
-    final unit = left == 1 ? offer.unit : '${offer.unit}s';
+    final ranked = book.isLive && book.marketOffers.isNotEmpty && book.marketItem == item
+        ? book.marketOffers
+        : rankOffers(item);
+    final offer = ranked.first.offer;
+    final unit = left == 1 ? offer.unit : (offer.unit.endsWith('s') ? offer.unit : '${offer.unit}s');
+    final place = offer.km > 0 ? '${offer.supplier}  ·  ${offer.km} km  ·  ' : '${offer.supplier}  ·  ';
     return OjaCard(
       color: ojaGreenSoft,
       child: Column(
@@ -131,7 +141,7 @@ class _RestockCard extends StatelessWidget {
         children: [
           Text('${itemTitle(item)} is low  ·  ${formatQty(left)} $unit left', style: const TextStyle(fontWeight: FontWeight.w700, color: ojaInk)),
           const SizedBox(height: 6),
-          Text('${offer.supplier}  ·  ${offer.km} km  ·  ${naira(offer.price)}  ·  Grade ${offer.grade}', style: const TextStyle(color: ojaInk)),
+          Text('$place${naira(offer.price)}  ·  Grade ${offer.grade}', style: const TextStyle(color: ojaInk)),
           Align(
             alignment: Alignment.centerLeft,
             child: TextButton(
