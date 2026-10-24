@@ -47,6 +47,9 @@ class Settings(BaseSettings):
     # saved as an alias; at or above CONFIRM the trader is asked "Do you mean ...?"; below, a new customer.
     CUSTOMER_MATCH_LINK_CONFIDENCE: float = Field(default=...)
     CUSTOMER_MATCH_CONFIRM_CONFIDENCE: float = Field(default=...)
+    # The same for an item name the model matches to the trader's inventory (FR-S25).
+    ITEM_MATCH_LINK_CONFIDENCE: float = Field(default=...)
+    ITEM_MATCH_CONFIRM_CONFIDENCE: float = Field(default=...)
 
     # Restock ranking (FR-S30): the five factor weights and the distance at which the distance score halves.
     SUGGESTION_WEIGHT_DISTANCE: float = Field(default=...)

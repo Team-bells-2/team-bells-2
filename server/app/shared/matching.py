@@ -1,7 +1,8 @@
 def match_key(text: str) -> str:
-    """How item and unit names are compared (server/TODO.txt item 1): case, extra spaces and a
+    """How item and unit names are compared (FR-S25, decision D6): case, extra spaces and a
     plural ending on the last word are ignored, so "Rices" = "rice", "bags" = "bag",
-    "tomatoes" = "tomato". Nothing smarter (aliases, synonyms) is attempted."""
+    "tomatoes" = "tomato". Different names ("palm oil" vs "oil") are left to the ledger's model match
+    against the trader's inventory (LedgerOrchestrator._match_item)."""
     words = text.casefold().split()
     if not words:
         return ""

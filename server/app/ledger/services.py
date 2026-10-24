@@ -21,10 +21,13 @@ _NO_PATTERN = re.compile(r"^\s*(no|nope|not\s+(her|him)|no\s+be\s+(she|he|am))\b
 
 # Pending-clarification bookkeeping kept inside partial_entry, never part of the entry itself.
 PENDING_TEXTS = "raw_texts"
-PENDING_KIND = "_kind"  # "missing", "confirm_entry" or "confirm_customer"
+PENDING_KIND = "_kind"  # "missing", "confirm_entry", "confirm_item" or "confirm_customer"
 PENDING_CANDIDATE = "_candidate"
 PENDING_MENTION = "_mention"
-_PENDING_KEYS = {PENDING_TEXTS, PENDING_KIND, PENDING_CANDIDATE, PENDING_MENTION}
+PENDING_ITEM_CHECKED = "_item_checked"  # the item was already matched against inventory; don't ask again
+_PENDING_KEYS = {PENDING_TEXTS, PENDING_KIND, PENDING_CANDIDATE, PENDING_MENTION, PENDING_ITEM_CHECKED}
+CONFIRM_KINDS = {"confirm_entry", "confirm_item", "confirm_customer"}
+STOCK_TYPES = {"sale", "credit_sale", "expense"}
 
 
 def is_yes(text: str) -> bool:

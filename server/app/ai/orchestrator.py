@@ -3,7 +3,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from app.ai import services
-from app.ai.schemas import CustomerMatch, IntentChoice, Interpretation, PhrasedReasons, ReasonFacts
+from app.ai.schemas import CustomerMatch, IntentChoice, Interpretation, ItemMatch, PhrasedReasons, ReasonFacts
 from app.shared.Infrastructure.llm.client import LLMClient, LLMError
 
 
@@ -53,6 +53,20 @@ class AIOrchestrator:
         if match.customer not in {customer["name"] for customer in customers}:
             return None, 0.0
         return match.customer, match.confidence
+
+    def match_item(self, mention: str, text: str, items: list[str]) -> tuple[str | None, float]:
+        """Which inventory item the mention means, with a confidence (FR-S25). A name not in the list is
+        discarded (BR-A7). No offline guess: without a model the name match alone decides."""
+        if not items or self.demo_mode:
+            return None, 0.0
+        try:
+            raw = self.llm_client.complete_json(services.ITEM_MATCH_PROMPT, services.item_match_payload(mention, text, items))
+            match = ItemMatch.model_validate(raw)
+        except (LLMError, ValidationError):
+            return None, 0.0
+        if match.item not in items:
+            return None, 0.0
+        return match.item, match.confidence
 
     def route_intent(self, question: str, customers: list[str], items: list[str]) -> IntentChoice | None:
         """The model picks a whitelisted intent and parameters (FR-S11). A customer or item not in the

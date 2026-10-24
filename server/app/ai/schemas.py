@@ -46,6 +46,15 @@ class CustomerMatch(BaseModel):
     confidence: float = Field(ge=0, le=1)
 
 
+class ItemMatch(BaseModel):
+    """Which inventory item a name refers to (FR-S25). The ledger checks the name is in its list."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    item: str | None = None
+    confidence: float = Field(ge=0, le=1)
+
+
 AskIntent = Literal["who_owes", "customer_balance", "today_total", "stock_level", "restock_suggestion", "unknown"]
 
 

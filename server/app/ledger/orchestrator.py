@@ -53,6 +53,8 @@ class LedgerOrchestrator:
         confidence_threshold: float,
         customer_link_confidence: float,
         customer_confirm_confidence: float,
+        item_link_confidence: float,
+        item_confirm_confidence: float,
         events: EventPublisher,
     ):
         self.entry_repository = entry_repository
@@ -65,6 +67,8 @@ class LedgerOrchestrator:
         self.confidence_threshold = confidence_threshold
         self.customer_link_confidence = customer_link_confidence
         self.customer_confirm_confidence = customer_confirm_confidence
+        self.item_link_confidence = item_link_confidence
+        self.item_confirm_confidence = item_confirm_confidence
         self.events = events
         # Inventory items whose stock movement changed in the current unit of work (published after commit).
         self._stock_touched: set[int] = set()
@@ -151,7 +155,7 @@ class LedgerOrchestrator:
         kind = pending.partial_entry.get(services.PENDING_KIND) if pending else None
         if (
             pending
-            and kind in {"confirm_entry", "confirm_customer"}
+            and kind in services.CONFIRM_KINDS
             and (services.is_yes(text) or services.is_no(text))
         ):
             # A yes/no to our own question is read in code, without a model call (BR-L6).
@@ -278,10 +282,7 @@ class LedgerOrchestrator:
         ):
             self.clarification_repository.delete_pending(pending)
             pending, partial = None, {}
-        elif pending and partial.get(services.PENDING_KIND) in {
-            "confirm_entry",
-            "confirm_customer",
-        }:
+        elif pending and partial.get(services.PENDING_KIND) in services.CONFIRM_KINDS:
             # Neither yes, no nor a new entry: repeat the question; nothing is saved.
             return LedgerResult(status="clarify", message=pending.question)
 
@@ -292,7 +293,12 @@ class LedgerOrchestrator:
             pending is not None and partial.get(services.PENDING_KIND) == "missing"
         )
         return self._complete(
-            trader_id, fields, texts, pending, check_confidence=not answered_question
+            trader_id,
+            fields,
+            texts,
+            pending,
+            check_confidence=not answered_question,
+            item_checked=bool(partial.get(services.PENDING_ITEM_CHECKED)),
         )
 
     def _complete(
@@ -303,8 +309,10 @@ class LedgerOrchestrator:
         pending: PendingClarification | None,
         check_confidence: bool,
         confirmed: bool = False,
+        item_checked: bool = False,
     ) -> LedgerResult:
-        """Ask for what is missing, confirm a low-confidence reading, resolve the customer, then save."""
+        """Ask for what is missing, confirm a low-confidence reading, match the item to inventory,
+        resolve the customer, then save. One question at a time."""
         if services.missing_fields(fields):
             return self._hold(
                 trader_id, fields, texts, services.missing_question(fields), "missing"
@@ -322,12 +330,25 @@ class LedgerOrchestrator:
                 "confirm_entry",
             )
 
+        if not item_checked:
+            candidate = self._match_item(trader_id, fields, " ".join(texts))
+            if candidate is not None:
+                return self._hold(
+                    trader_id,
+                    fields,
+                    texts,
+                    f"Do you mean {candidate}?",
+                    "confirm_item",
+                    candidate=candidate,
+                    mention=fields.get("item"),
+                )
+
         kind, customer, detail = self._resolve_customer(
             trader_id, complete.customer, " ".join(texts)
         )
         if kind == "ambiguous" and detail:
             fields.pop("customer", None)
-            return self._hold(trader_id, fields, texts, detail, "missing")
+            return self._hold(trader_id, fields, texts, detail, "missing", item_checked=True)
         if kind == "confirm" and detail:
             return self._hold(
                 trader_id,
@@ -337,6 +358,7 @@ class LedgerOrchestrator:
                 "confirm_customer",
                 candidate=detail,
                 mention=complete.customer,
+                item_checked=True,
             )
         if kind == "new" and complete.customer:
             customer = self._create_customer(trader_id, complete.customer)
@@ -367,6 +389,20 @@ class LedgerOrchestrator:
 
         candidate = str(partial.get(services.PENDING_CANDIDATE, ""))
         mention = partial.get(services.PENDING_MENTION)
+        if partial.get(services.PENDING_KIND) == "confirm_item":
+            # Yes: the inventory item. No: keep the trader's own name (saved as not in inventory).
+            if services.is_yes(text):
+                fields["item"] = candidate
+            return self._complete(
+                trader_id,
+                fields,
+                texts,
+                pending,
+                check_confidence=False,
+                confirmed=True,
+                item_checked=True,
+            )
+
         customer = self.customer_repository.get_customer_by_name(trader_id, candidate)
         if services.is_yes(text) and customer is not None:
             if mention:
@@ -474,6 +510,10 @@ class LedgerOrchestrator:
                     f"Do you mean {detail}? Please use the full name.",
                 )
             customer = resolved or self._create_customer(trader_id, changes.customer)
+        if changes.item is not None:
+            changes = changes.model_copy(
+                update={"item": self._linked_item(trader_id, changes.item, changes.item, entry.type)}
+            )
         for field in (
             "type",
             "item",
@@ -520,17 +560,44 @@ class LedgerOrchestrator:
         kind: str,
         candidate: str | None = None,
         mention: str | None = None,
+        item_checked: bool = False,
     ) -> LedgerResult:
         partial: dict[str, Any] = {
             **fields,
             services.PENDING_TEXTS: texts,
             services.PENDING_KIND: kind,
         }
+        if item_checked or kind == "confirm_item":
+            partial[services.PENDING_ITEM_CHECKED] = True
         if candidate is not None:
             partial[services.PENDING_CANDIDATE] = candidate
             partial[services.PENDING_MENTION] = mention
         self.clarification_repository.save_pending(trader_id, partial, question)
         return LedgerResult(status="clarify", message=question)
+
+    def _match_item(self, trader_id: int, fields: dict[str, Any], text: str) -> str | None:
+        """FR-S25: item name first (match_key), then the model against the trader's inventory.
+        A sure match replaces fields["item"] with the inventory name; an unsure one is returned as the
+        candidate to confirm; otherwise the name stays as said (not in inventory)."""
+        item, entry_type = fields.get("item"), fields.get("type")
+        if not item or entry_type not in services.STOCK_TYPES:
+            return None
+        if self.inventory_repository.get_item_by_name(trader_id, item) is not None:
+            return None
+        names = [stocked.name for stocked, _ in self.inventory_repository.list_items_with_quantity(trader_id)]
+        name, confidence = self.ai_orchestrator.match_item(item, text, names)
+        if name and confidence >= self.item_link_confidence:
+            fields["item"] = name
+            return None
+        if name and confidence >= self.item_confirm_confidence:
+            return name
+        return None
+
+    def _linked_item(self, trader_id: int, item: str, text: str, entry_type: str) -> str:
+        """For corrections, which cannot ask: the inventory name only when the model is sure."""
+        fields: dict[str, Any] = {"item": item, "type": entry_type}
+        sure_only = self._match_item(trader_id, fields, text)
+        return item if sure_only is not None else fields["item"]
 
     def _resolve_customer(
         self, trader_id: int, mention: str | None, text: str

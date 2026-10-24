@@ -54,6 +54,8 @@ def get_ledger_orchestrator(
         settings.CONFIDENCE_THRESHOLD,
         settings.CUSTOMER_MATCH_LINK_CONFIDENCE,
         settings.CUSTOMER_MATCH_CONFIRM_CONFIDENCE,
+        settings.ITEM_MATCH_LINK_CONFIDENCE,
+        settings.ITEM_MATCH_CONFIRM_CONFIDENCE,
         events,
     )
 
