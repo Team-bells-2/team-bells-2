@@ -200,6 +200,7 @@ class _OjaAppState extends State<OjaApp> {
                           InventoryPage(
                             book: _book,
                             onRefresh: _live ? _refresh : null,
+                            onChanged: _onBookChanged,
                             onItem: (item) async {
                               if (_live) {
                                 await _book.loadMarketOffers(item);

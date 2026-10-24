@@ -4,6 +4,7 @@ import '../../core/catalog.dart';
 import '../../core/ledger/ledger.dart';
 import '../../core/theme.dart';
 import '../../core/widgets/oja_card.dart';
+import 'stock_sheets.dart';
 
 enum _InventoryFilter { all, low, grains, oil }
 
@@ -13,11 +14,15 @@ class InventoryPage extends StatefulWidget {
     required this.book,
     required this.onItem,
     this.onRefresh,
+    this.onChanged,
   });
 
   final OjaBook book;
   final ValueChanged<String> onItem;
   final Future<void> Function()? onRefresh;
+
+  /// Called after a stock change is saved, so Home and the rest of the app redraw.
+  final VoidCallback? onChanged;
 
   @override
   State<InventoryPage> createState() => _InventoryPageState();
@@ -157,7 +162,8 @@ class _InventoryPageState extends State<InventoryPage> {
             ),
             const SizedBox(width: 8),
             FilledButton.icon(
-              onPressed: () => _showAddHint(context),
+              key: const Key('add-commodity'),
+              onPressed: () => book.isLive ? _addCommodity() : _showAddHint(context),
               style: FilledButton.styleFrom(
                 backgroundColor: ojaGreen,
                 foregroundColor: Colors.white,
@@ -215,6 +221,7 @@ class _InventoryPageState extends State<InventoryPage> {
               selected: book.marketItem == line.key,
               low: line.isLow || book.apiLowStock.contains(line.key),
               onTap: () => widget.onItem(line.key),
+              onStock: book.isLive && line.id != null ? () => _changeStock(line) : null,
             ),
         const SizedBox(height: 18),
         Text(
@@ -233,6 +240,24 @@ class _InventoryPageState extends State<InventoryPage> {
 
     if (widget.onRefresh == null) return body;
     return RefreshIndicator(color: ojaGreen, onRefresh: widget.onRefresh!, child: body);
+  }
+
+  Future<void> _addCommodity() async {
+    final added = await showAddCommoditySheet(context, widget.book);
+    if (!mounted || !added) return;
+    _saved('Commodity added.');
+  }
+
+  Future<void> _changeStock(InventoryLine line) async {
+    final saved = await showStockSheet(context, widget.book, line);
+    if (!mounted || !saved) return;
+    _saved('${line.name} updated.');
+  }
+
+  void _saved(String message) {
+    widget.onChanged?.call();
+    setState(() {});
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(backgroundColor: ojaGreen, content: Text(message)));
   }
 
   void _showAddHint(BuildContext context) {
@@ -335,12 +360,16 @@ class _CommodityTile extends StatelessWidget {
     required this.selected,
     required this.low,
     required this.onTap,
+    this.onStock,
   });
 
   final InventoryLine line;
   final bool selected;
   final bool low;
   final VoidCallback onTap;
+
+  /// Opens the stock form (live only).
+  final VoidCallback? onStock;
 
   @override
   Widget build(BuildContext context) {
@@ -397,6 +426,22 @@ class _CommodityTile extends StatelessWidget {
                     ],
                   ],
                 ),
+                if (onStock != null) ...[
+                  const SizedBox(width: 8),
+                  OutlinedButton(
+                    key: Key('stock-${line.key}'),
+                    onPressed: onStock,
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: ojaGreenDark,
+                      side: const BorderSide(color: ojaLine),
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                      minimumSize: Size.zero,
+                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                    ),
+                    child: const Text('Stock', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 12)),
+                  ),
+                ],
               ],
             ),
           ),

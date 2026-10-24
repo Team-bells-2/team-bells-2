@@ -16,8 +16,13 @@ class InventoryLine {
     required this.unit,
     this.unitCostNgn = 0,
     this.reorderLevel = 0,
+    this.reorderQuantity = 0,
+    this.id,
   });
 
+  /// The server's item id (live API only); null in the offline demo book.
+  final int? id;
+  final double reorderQuantity;
   final String key;
   final String name;
   final double quantity;
@@ -473,6 +478,8 @@ class OjaBook {
           unit: row['unit'] as String? ?? 'bag',
           unitCostNgn: (row['unit_cost_ngn'] as num?)?.toDouble() ?? 0,
           reorderLevel: (row['reorder_level'] as num?)?.toDouble() ?? 0,
+          reorderQuantity: (row['reorder_quantity'] as num?)?.toDouble() ?? 0,
+          id: (row['id'] as num?)?.toInt(),
         ),
     ]..removeWhere((line) => line.key.isEmpty);
   }
@@ -564,6 +571,49 @@ class OjaBook {
     } finally {
       busy = false;
     }
+  }
+
+  /// Inventory screen (FR-C15): adds an item, then its opening stock when [openingQuantity] > 0.
+  /// Figures shown afterwards are reloaded from the server.
+  Future<void> addInventoryItem({
+    required String name,
+    required String unit,
+    double? unitCostNgn,
+    double? reorderLevel,
+    double? reorderQuantity,
+    double? openingQuantity,
+  }) async {
+    final client = _requireApi();
+    final item = await client.addInventoryItem(
+      name: name,
+      unit: unit,
+      unitCostNgn: unitCostNgn,
+      reorderLevel: reorderLevel,
+      reorderQuantity: reorderQuantity,
+    );
+    final id = (item['id'] as num).toInt();
+    if (openingQuantity != null && openingQuantity > 0) {
+      await client.addStock(id, quantityChange: openingQuantity, reason: 'opening');
+    }
+    await refreshFromApi();
+  }
+
+  /// Opening stock, a restock or an adjustment for one item (FR-S24).
+  Future<void> changeStock(int itemId, {required double quantityChange, required String reason}) async {
+    await _requireApi().addStock(itemId, quantityChange: quantityChange, reason: reason);
+    await refreshFromApi();
+  }
+
+  /// Edits unit cost, reorder level or reorder quantity; never the quantity on hand.
+  Future<void> editInventoryItem(int itemId, Map<String, dynamic> fields) async {
+    await _requireApi().updateInventoryItem(itemId, fields);
+    await refreshFromApi();
+  }
+
+  OjaApi _requireApi() {
+    final client = api;
+    if (client == null) throw OjaApiException(0, 'Log in to change inventory.');
+    return client;
   }
 
   /// Restores the assistant chat from the server after a restart: the greeting, then the stored turns.

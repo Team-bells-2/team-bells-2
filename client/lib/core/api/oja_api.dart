@@ -113,6 +113,36 @@ class OjaApi {
 
   Future<List<Map<String, dynamic>>> getInventory() => _getJsonList('/inventory');
 
+  /// Adds an item (FR-S23). Same name as an existing item (ignoring case) -> 409 `item_exists`.
+  Future<Map<String, dynamic>> addInventoryItem({
+    required String name,
+    required String unit,
+    double? unitCostNgn,
+    double? reorderLevel,
+    double? reorderQuantity,
+  }) {
+    return _postJson('/inventory', {
+      'name': name,
+      'unit': unit,
+      'unit_cost_ngn': ?unitCostNgn,
+      'reorder_level': ?reorderLevel,
+      'reorder_quantity': ?reorderQuantity,
+    });
+  }
+
+  /// Edits an item's details; quantity on hand never changes here (FR-S23).
+  Future<Map<String, dynamic>> updateInventoryItem(int id, Map<String, dynamic> fields) async {
+    final body = await _send('PATCH', '/inventory/$id', payload: fields);
+    if (body is Map<String, dynamic>) return body;
+    throw OjaApiException(500, 'Unexpected response from /inventory/$id.');
+  }
+
+  /// Records a stock movement (FR-S24): `opening` or `restock` (positive), or `adjustment` (+/-).
+  /// Stock can't go below 0 -> 409 `negative_stock`.
+  Future<Map<String, dynamic>> addStock(int id, {required double quantityChange, required String reason}) {
+    return _postJson('/inventory/$id/stock', {'quantity_change': quantityChange, 'reason': reason});
+  }
+
   /// Up to 3 restock suppliers. Without [quantity] the item's reorder quantity is used.
   Future<Map<String, dynamic>> getSuggestions(String item, {double? quantity}) {
     final query = 'item=${Uri.encodeQueryComponent(item)}${quantity == null ? '' : '&quantity=$quantity'}';
@@ -160,7 +190,11 @@ class OjaApi {
     final uri = Uri.parse('$baseUrl$path');
     late final HttpClientResponse response;
     try {
-      final request = method == 'POST' ? await _client.postUrl(uri) : await _client.getUrl(uri);
+      final request = switch (method) {
+        'POST' => await _client.postUrl(uri),
+        'PATCH' => await _client.patchUrl(uri),
+        _ => await _client.getUrl(uri),
+      };
       request.headers.set(HttpHeaders.acceptHeader, 'application/json');
       if (auth) request.headers.set(HttpHeaders.authorizationHeader, 'Bearer $_token');
       if (payload != null) {
