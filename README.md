@@ -34,12 +34,13 @@ Needs Python 3.12+ and PostgreSQL. From the repository root:
 python -m venv .venv
 .venv/bin/pip install -r requirements.txt
 cp .env.example .env            # then fill in DATABASE_URL, LLM_API_KEY and the rest
-.venv/bin/alembic upgrade head  # create or update the tables
-cd server
-../.venv/bin/python -m app.demo.index   # seed locations and demo suppliers (safe to rerun)
-../.venv/bin/uvicorn app.main:app --reload --port 8000
+make dev
 ```
 
+- `make dev` applies migrations, seeds reference data, creates the synthetic demo Trader only if no
+  Trader exists, and starts the API. Render runs the same migration and seed sequence before Uvicorn.
+- The seed command is safe to rerun: reference rows are skipped when present, and demo business data
+  is created only when the `traders` table is empty. It does not create a session during startup.
 - API docs: <http://127.0.0.1:8000/docs>
 - Every setting is required and read from `.env` (see `.env.example`). A missing key stops startup with its name.
 - Never commit `.env` or put secrets in client code.

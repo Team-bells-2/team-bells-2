@@ -1,4 +1,4 @@
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 
 from app.chat.models import ChatMessage
 from app.consent.models import AccessLog, AccessRequest, AccessToken
@@ -14,9 +14,14 @@ _TRADER_TABLES = (
     ChatMessage, AccessLog, AccessToken, AccessRequest, StockMovement, EntryEdit, Entry, PendingClarification,
     ProcessedMessage, CustomerAlias, Customer, InventoryItem, TraderSession, Trader,
 )
+_SEED_LOCK_ID = 0x4F4A415F53454544
 
 
 class SeedRepository(BaseRepository):
+    def acquire_seed_lock(self) -> None:
+        if self.db.get_bind().dialect.name == "postgresql":
+            self.db.execute(select(func.pg_advisory_xact_lock(_SEED_LOCK_ID)))
+
     def location_exists(self, name: str) -> bool:
         return self.db.scalar(select(Location.id).where(Location.name == name)) is not None
 

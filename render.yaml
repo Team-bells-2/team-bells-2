@@ -9,8 +9,9 @@ services:
     runtime: python
     plan: free
     buildCommand: pip install -r requirements.txt
-    # Free plan: no pre-deploy step, so each start runs the migrations and the reference seed
-    # (markets and demo suppliers; safe to rerun), then the API. One worker: the WebSocket hub is in memory.
+    # Free plan: no pre-deploy step, so each start runs migrations and the reference seed, then
+    # seeds the synthetic demo trader only when the traders table is empty, before starting the API.
+    # One worker: the WebSocket hub is in memory.
     startCommand: >-
       export DATABASE_URL="$(echo "$DATABASE_URL" | sed -E 's#^postgres(ql)?://#postgresql+psycopg://#')"
       && alembic upgrade head
