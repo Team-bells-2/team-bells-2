@@ -28,12 +28,18 @@ class InventoryPage extends StatelessWidget {
           style: const TextStyle(color: ojaMuted),
         ),
         const SizedBox(height: 14),
-        for (final item in stockItems)
+        if (book.isLive && book.stock.isEmpty)
+          const Padding(
+            padding: EdgeInsets.only(bottom: 10),
+            child: Text('No items yet.', style: TextStyle(color: ojaMuted)),
+          ),
+        for (final item in book.isLive ? book.stock.keys.toList() : stockItems)
           _StockTile(
             item: item,
             quantity: book.stock[item] ?? 0,
+            unit: book.unitOf(item),
             selected: book.marketItem == item,
-            low: (book.stock[item] ?? 0) <= (reorderLevels[item] ?? 0),
+            low: book.isLow(item),
             onTap: () => onItem(item),
           ),
         const SizedBox(height: 8),
@@ -44,7 +50,7 @@ class InventoryPage extends StatelessWidget {
         if (ranked.isEmpty)
           const Text('No market offers yet.', style: TextStyle(color: ojaMuted))
         else
-          for (final row in ranked) _OfferTile(row: row, showDistance: !book.isLive),
+          for (final row in ranked) _OfferTile(row: row),
       ],
     );
   }
@@ -54,6 +60,7 @@ class _StockTile extends StatelessWidget {
   const _StockTile({
     required this.item,
     required this.quantity,
+    required this.unit,
     required this.selected,
     required this.low,
     required this.onTap,
@@ -61,13 +68,14 @@ class _StockTile extends StatelessWidget {
 
   final String item;
   final double quantity;
+  final String unit;
   final bool selected;
   final bool low;
   final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
-    final unit = item == 'oil' ? 'kegs' : 'bags';
+    final units = quantity == 1 || unit.endsWith('s') ? unit : '${unit}s';
     return Padding(
       padding: const EdgeInsets.only(bottom: 10),
       child: Material(
@@ -90,7 +98,7 @@ class _StockTile extends StatelessWidget {
                     children: [
                       Text(itemTitle(item), style: const TextStyle(fontWeight: FontWeight.w700, color: ojaInk)),
                       const SizedBox(height: 2),
-                      Text('${formatQty(quantity)} $unit', style: const TextStyle(color: ojaMuted)),
+                      Text('${formatQty(quantity)} $units', style: const TextStyle(color: ojaMuted)),
                     ],
                   ),
                 ),
@@ -105,15 +113,14 @@ class _StockTile extends StatelessWidget {
 }
 
 class _OfferTile extends StatelessWidget {
-  const _OfferTile({required this.row, this.showDistance = true});
+  const _OfferTile({required this.row});
 
   final RankedOffer row;
-  final bool showDistance;
 
   @override
   Widget build(BuildContext context) {
     final offer = row.offer;
-    final place = showDistance && offer.km > 0
+    final place = offer.km > 0
         ? '${offer.area}  ·  ${offer.km} km'
         : offer.area;
     return Padding(

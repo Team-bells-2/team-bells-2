@@ -23,6 +23,7 @@ The response examples below were captured from the running app.
 | `POST /auth/logout`, `POST /auth/change-pin` | token | End this device's session; set or change the PIN |
 | `GET /profile`, `PATCH /profile` | token | Read or edit the trader |
 | `POST /messages` | token | Text or voice message: save, correct, clarify or fall back |
+| `GET /messages/history` | token | The assistant chat (both sides of every turn), to restore it after a restart |
 | `GET /entries` | token | Ledger entries, newest first |
 | `GET /customers` | token | Customers with aliases, derived balances and overdue flags |
 | `GET /inventory`, `POST /inventory` | token | List items, add an item |
@@ -125,6 +126,25 @@ GET returns the trader object above. PATCH accepts any of `name`, `business_name
 | Voice note too large | 413 | `audio_too_large` | Record a shorter note |
 | Correction with nothing to correct | 409 | `no_entry_to_correct` | Show `message` |
 | Missing field | 422 | `validation_error` | Fix the request |
+
+### `GET /messages/history`
+
+The trader's assistant chat, one per trader (the same on every device). Query parameters: `limit` (1 to 500, default 100) and `before_id` (for older pages). Returns the newest `limit` messages, **oldest first**:
+
+```json
+{ "messages": [
+    { "id": 7, "role": "trader", "text": "I sell two bags and half", "entry_id": null, "created_at": "…" },
+    { "id": 8, "role": "assistant", "text": "How much did you collect for the 2.5 bags?", "entry_id": null, "created_at": "…" },
+    { "id": 9, "role": "trader", "text": "145k", "entry_id": null, "created_at": "…" },
+    { "id": 10, "role": "assistant", "text": "Saved: sale for ₦145,000.", "entry_id": 8, "created_at": "…" } ],
+  "has_more": true }
+```
+
+- Every `POST /messages` reply (saved, corrected, clarify, fallback) and every `POST /ask` answer adds two messages: the trader's text and the assistant's reply. For voice, the trader's text is the transcript.
+- `entry_id` is set on the assistant reply that saved or corrected an entry; open it from `GET /entries`.
+- Failed requests (503, 502, network errors) are not stored. A retry with the same `client_message_id` is stored once.
+- When `has_more` is true, load older messages with `before_id=<id of the first message you have>`.
+- The opening greeting is the app's own text and is not stored.
 
 ### `GET /entries`
 
@@ -311,6 +331,8 @@ Bottom navigation: Home, Assistant, Inventory, Profile.
 
 ## Agent Action Log
 
+- 2026-10-24: Chat history. New `GET /messages/history` (one chat per trader, oldest first, `limit` and `before_id` paging); `POST /messages` and `POST /ask` store both sides of each turn, with `entry_id` on replies that saved or corrected an entry. Migration `9fd76fded38f` (chat_messages). The Flutter Assistant restores the chat from it on start.
+- 2026-10-24: Flutter client moved to this API (`client/lib/core/api/`, `client/lib/core/ledger/ledger.dart`). It logs in with phone + PIN from `config.dart` (`--dart-define=OJA_TRADER_PHONE` / `OJA_TRADER_PIN`) and onboards that trader with rice, beans, garri and oil on first launch. Typed and spoken text (speech recognised on the phone) go to `POST /messages`; questions go to `POST /ask`; Home, Inventory and restock read `/home`, `/entries`, `/customers`, `/inventory` and `/suggestions`. Audio upload and the WebSocket are not used yet. `render.yaml` now deploys `server/` with PostgreSQL.
 - 2026-10-24: Phase 3.5/3.6 decisions recorded. Optional PINs are supported at onboarding or later; legacy sessions without expiry are assigned `created_at + SESSION_TOKEN_TTL_DAYS` on first authentication. Added authenticated WebSocket notifications for ledger, inventory, profile and consent events; no Flutter or dashboard-page changes.
 
 - 2026-10-23: Handoff aligned to OJA and `final-prd.md`; old MerchantPal API is identified as a separate legacy prototype.

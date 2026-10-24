@@ -1,5 +1,6 @@
 from sqlalchemy import delete, select
 
+from app.chat.models import ChatMessage
 from app.consent.models import AccessLog, AccessRequest, AccessToken
 from app.customers.models import Customer, CustomerAlias
 from app.inventory.models import InventoryItem, StockMovement
@@ -10,7 +11,7 @@ from app.suggestions.models import Supplier
 
 # Every table holding trader data, children before parents, so a reset needs no database cascades.
 _TRADER_TABLES = (
-    AccessLog, AccessToken, AccessRequest, StockMovement, EntryEdit, Entry, PendingClarification,
+    ChatMessage, AccessLog, AccessToken, AccessRequest, StockMovement, EntryEdit, Entry, PendingClarification,
     ProcessedMessage, CustomerAlias, Customer, InventoryItem, TraderSession, Trader,
 )
 

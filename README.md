@@ -16,7 +16,8 @@ The AI interprets messages and phrases explanations. Totals, debts, profit, stoc
 | --- | --- |
 | `server/` | The OJA backend (FastAPI, SQLAlchemy, PostgreSQL, Alembic), vertical slices under `server/app/` |
 | `client/` | The Flutter app (not yet calling the API) |
-| `backend.py/`, `eval/`, `render.yaml`, `requirements-whisper.txt` | Earlier prototype, kept for reference. Not the OJA API contract |
+| `backend.py/`, `eval/`, `requirements-whisper.txt` | Earlier prototype, kept for reference. Not the OJA API contract |
+| `render.yaml` | Render deployment of `server/` with PostgreSQL. Enter `LLM_API_KEY` and `STT_API_KEY` in the Render dashboard |
 | `alembic.ini` | Alembic config; migrations live in `server/app/shared/Infrastructure/db/alembic/` |
 | `requirements.txt` | Python dependencies for `server/` |
 
@@ -83,7 +84,7 @@ The tests use an in-memory SQLite database, a fake LLM and a fake speech-to-text
 
 ## Prototype
 
-`backend.py/` is an earlier single-merchant prototype (SQLite, market price comparison, local Whisper). It is kept for reference only. `render.yaml` still deploys it, until deployment is moved to `server/`. To run it:
+`backend.py/` is an earlier single-merchant prototype (SQLite, market price comparison, local Whisper). It is kept for reference only. It is no longer deployed. To run it:
 
 ```sh
 .venv/bin/uvicorn main:app --app-dir backend.py --reload
