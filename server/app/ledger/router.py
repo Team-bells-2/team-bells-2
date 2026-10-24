@@ -8,6 +8,8 @@ from starlette.datastructures import UploadFile
 
 from app.ai.dependencies import get_ai_orchestrator
 from app.ai.orchestrator import AIOrchestrator
+from app.chat.orchestrator import ChatOrchestrator
+from app.chat.router import get_chat_orchestrator
 from app.customers.dependencies import get_customer_repository
 from app.customers.repositories.customer_repository import CustomerRepository
 from app.inventory.dependencies import get_inventory_repository
@@ -65,6 +67,7 @@ async def post_message(
     request: Request,
     trader: Trader = Depends(get_current_trader),
     orchestrator: LedgerOrchestrator = Depends(get_ledger_orchestrator),
+    chat: ChatOrchestrator = Depends(get_chat_orchestrator),
 ) -> LedgerResult:
     """Text as JSON {text, client_message_id}, or a voice note as multipart form
     fields `audio` (file) and `client_message_id` (FR-S1, S2)."""
@@ -85,9 +88,10 @@ async def post_message(
                     413, "audio_too_large", f"Voice notes must be {settings.STT_MAX_UPLOAD_MB} MB or smaller."
                 )
             audio_type = (audio.content_type or "").split(";", maxsplit=1)[0].strip().lower()
-        return await run_in_threadpool(
-            orchestrator.handle_voice_message, trader.id, client_message_id.strip(), data, audio_type
-        )
+        message_id = client_message_id.strip()
+        result = await run_in_threadpool(orchestrator.handle_voice_message, trader.id, message_id, data, audio_type)
+        await run_in_threadpool(_record_turn, chat, trader.id, message_id, result.transcript or "(voice note)", result)
+        return result
 
     try:
         body = MessageRequest.model_validate(await request.json())
@@ -95,7 +99,17 @@ async def post_message(
         raise RequestValidationError(error.errors()) from error
     except ValueError as error:
         raise AppError(422, "validation_error", "Send JSON {text, client_message_id} or a multipart voice note.") from error
-    return await run_in_threadpool(orchestrator.handle_text_message, trader.id, body.client_message_id, body.text)
+    result = await run_in_threadpool(orchestrator.handle_text_message, trader.id, body.client_message_id, body.text)
+    await run_in_threadpool(_record_turn, chat, trader.id, body.client_message_id, body.text, result)
+    return result
+
+
+def _record_turn(
+    chat: ChatOrchestrator, trader_id: int, client_message_id: str, trader_text: str, result: LedgerResult
+) -> None:
+    """Both sides of the turn go into the chat history, whatever the status (saved, clarify, ...)."""
+    entry_id = result.entry.id if result.entry is not None else None
+    chat.record_turn(trader_id, trader_text, result.message, entry_id, client_message_id)
 
 
 @router.get("/entries", response_model=list[EntryOut])

@@ -4,6 +4,8 @@ from app.ai.dependencies import get_ai_orchestrator
 from app.ai.orchestrator import AIOrchestrator
 from app.ask.orchestrator import AskOrchestrator
 from app.ask.schemas import AskRequest, AskResponse
+from app.chat.orchestrator import ChatOrchestrator
+from app.chat.router import get_chat_orchestrator
 from app.customers.orchestrator import CustomerOrchestrator
 from app.customers.router import get_customer_orchestrator
 from app.inventory.dependencies import get_inventory_repository
@@ -35,5 +37,8 @@ def ask(
     request: AskRequest,
     trader: Trader = Depends(get_current_trader),
     orchestrator: AskOrchestrator = Depends(get_ask_orchestrator),
+    chat: ChatOrchestrator = Depends(get_chat_orchestrator),
 ) -> AskResponse:
-    return orchestrator.answer(trader, request.question)
+    response = orchestrator.answer(trader, request.question)
+    chat.record_turn(trader.id, request.question, response.answer)
+    return response

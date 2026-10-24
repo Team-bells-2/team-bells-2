@@ -2,6 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.ask.router import router as ask_router
+from app.chat.router import router as chat_router
 from app.consent.router import router as consent_router
 from app.customers.router import router as customers_router
 from app.demo.router import router as demo_router
@@ -27,6 +28,7 @@ app.add_middleware(
 app.include_router(onboarding_router)
 app.include_router(profile_router)
 app.include_router(customers_router)
+app.include_router(chat_router)
 app.include_router(ledger_router)
 app.include_router(inventory_router)
 app.include_router(home_router)
