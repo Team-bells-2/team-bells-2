@@ -311,6 +311,7 @@ Bottom navigation: Home, Assistant, Inventory, Profile.
 
 ## Agent Action Log
 
+- 2026-10-24: Flutter client moved to this API (`client/lib/core/api/`, `client/lib/core/ledger/ledger.dart`). It logs in with phone + PIN from `config.dart` (`--dart-define=OJA_TRADER_PHONE` / `OJA_TRADER_PIN`) and onboards that trader with rice, beans, garri and oil on first launch. Typed and spoken text (speech recognised on the phone) go to `POST /messages`; questions go to `POST /ask`; Home, Inventory and restock read `/home`, `/entries`, `/customers`, `/inventory` and `/suggestions`. Audio upload and the WebSocket are not used yet. `render.yaml` now deploys `server/` with PostgreSQL.
 - 2026-10-24: Phase 3.5/3.6 decisions recorded. Optional PINs are supported at onboarding or later; legacy sessions without expiry are assigned `created_at + SESSION_TOKEN_TTL_DAYS` on first authentication. Added authenticated WebSocket notifications for ledger, inventory, profile and consent events; no Flutter or dashboard-page changes.
 
 - 2026-10-23: Handoff aligned to OJA and `final-prd.md`; old MerchantPal API is identified as a separate legacy prototype.

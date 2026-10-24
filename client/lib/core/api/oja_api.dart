@@ -1,109 +1,86 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 
 import 'config.dart';
 
 class OjaApiException implements Exception {
-  OjaApiException(this.statusCode, this.message);
+  OjaApiException(this.statusCode, this.message, {this.code});
 
   final int statusCode;
   final String message;
+
+  /// The server's `error.code`, e.g. `ai_unavailable` or `invalid_credentials`.
+  final String? code;
 
   @override
   String toString() => message;
 }
 
-/// Thin client for the live Render API (`backend.py` contract).
+/// Client for the OJA API in `server/` (see FRONTEND_HANDOFF.md).
 ///
-/// Text ledger writes use [createEntry] (`POST /entries`).
-/// Voice uses [transcribe] then [sendMessage] (`/transcribe`, `/messages`).
+/// Every trader call sends `Authorization: Bearer <token>`. The token comes from
+/// [signIn]: log in with phone + PIN, or onboard the trader the first time.
 class OjaApi {
   OjaApi({this.baseUrl = ojaApiBaseUrl, HttpClient? client}) : _client = client ?? HttpClient();
 
   final String baseUrl;
   final HttpClient _client;
+  final _random = Random();
+  String? _token;
 
-  Future<Map<String, dynamic>> getProfit() async {
-    return _getJson('/reports/profit');
-  }
+  bool get signedIn => _token != null;
 
-  Future<Map<String, dynamic>> getInsights() async {
-    return _getJson('/insights');
-  }
-
-  Future<List<Map<String, dynamic>>> getCustomers() async {
-    return _getJsonList('/customers');
-  }
-
-  Future<List<Map<String, dynamic>>> getEntries({int limit = 50}) async {
-    return _getJsonList('/entries?limit=$limit');
-  }
-
-  Future<List<Map<String, dynamic>>> getInventory() async {
-    return _getJsonList('/inventory');
-  }
-
-  Future<Map<String, dynamic>> getMarkets() async {
-    return _getJson('/markets');
-  }
-
-  Future<Map<String, dynamic>> recommendMarkets({
-    required String product,
-    required double quantity,
-    String priority = 'balanced',
-  }) async {
-    return _postJson('/markets/recommend', {
-      'product': product,
-      'quantity': quantity,
-      'priority': priority,
-    });
-  }
-
-  Future<Map<String, dynamic>> ask(String question) async {
-    return _postJson('/ask', {'question': question});
-  }
-
-  /// Structured text entry — use for typed assistant input.
-  Future<Map<String, dynamic>> createEntry(Map<String, dynamic> entry) async {
-    return _postJson('/entries', entry);
-  }
-
-  Future<Map<String, dynamic>> stockIn(Map<String, dynamic> body) async {
-    return _postJson('/inventory/stock-in', body);
-  }
-
-  /// AI / conversation path — use after voice transcription.
-  Future<Map<String, dynamic>> sendMessage({
-    required String text,
-    required String conversationId,
-  }) async {
-    return _postJson('/messages', {
-      'text': text,
-      'conversation_id': conversationId,
-    });
-  }
-
-  /// Upload raw audio bytes to local Whisper on the server.
-  Future<Map<String, dynamic>> transcribe(List<int> audio, {String contentType = 'audio/m4a'}) async {
-    final uri = Uri.parse('$baseUrl/transcribe');
-    late final HttpClientRequest request;
+  /// Logs in with the configured phone + PIN. When the trader does not exist yet,
+  /// onboards them with their main items, then keeps the returned token.
+  Future<Map<String, dynamic>> signIn() async {
     try {
-      request = await _client.postUrl(uri);
-    } on SocketException catch (error) {
-      throw OjaApiException(0, 'Cannot reach OJA API: ${error.message}');
+      final result = await _postJson('/auth/login', {'phone': ojaTraderPhone, 'pin': ojaTraderPin}, auth: false);
+      _token = result['token'] as String?;
+      return Map<String, dynamic>.from(result['trader'] as Map);
+    } on OjaApiException catch (error) {
+      if (error.code != 'invalid_credentials') rethrow;
     }
-    request.headers.set(HttpHeaders.acceptHeader, 'application/json');
-    request.headers.set(HttpHeaders.contentTypeHeader, contentType);
-    request.add(audio);
-    final response = await request.close().timeout(const Duration(seconds: 90));
-    final raw = await response.transform(utf8.decoder).join();
-    final decoded = raw.isEmpty ? null : jsonDecode(raw);
-    if (response.statusCode >= 200 && response.statusCode < 300) {
-      if (decoded is Map<String, dynamic>) return decoded;
-      throw OjaApiException(500, 'Unexpected response from /transcribe.');
-    }
-    throw OjaApiException(response.statusCode, _errorMessage(decoded, response.statusCode));
+    final result = await _postJson('/onboarding', {
+      'name': ojaTraderName,
+      'phone': ojaTraderPhone,
+      'business_name': ojaBusinessName,
+      'sector': 'foodstuff',
+      'location_name': ojaLocationName,
+      'pin': ojaTraderPin,
+      'items': ojaStartingItems,
+    }, auth: false);
+    _token = result['token'] as String?;
+    return Map<String, dynamic>.from(result['trader'] as Map);
   }
+
+  Future<Map<String, dynamic>> getHome({String period = 'today'}) => _getJson('/home?period=$period');
+
+  Future<List<Map<String, dynamic>>> getEntries({String? period, int limit = 50}) {
+    final query = period == null ? 'limit=$limit' : 'period=$period&limit=$limit';
+    return _getJsonList('/entries?$query');
+  }
+
+  Future<List<Map<String, dynamic>>> getCustomers() => _getJsonList('/customers');
+
+  Future<List<Map<String, dynamic>>> getInventory() => _getJsonList('/inventory');
+
+  /// Up to 3 restock suppliers. Without [quantity] the item's reorder quantity is used.
+  Future<Map<String, dynamic>> getSuggestions(String item, {double? quantity}) {
+    final query = 'item=${Uri.encodeQueryComponent(item)}${quantity == null ? '' : '&quantity=$quantity'}';
+    return _getJson('/suggestions?$query');
+  }
+
+  Future<Map<String, dynamic>> ask(String question) => _postJson('/ask', {'question': question});
+
+  /// Text message (typed, or a voice note transcribed on the phone): the server saves,
+  /// corrects, asks one question or falls back. Reuse [clientMessageId] on a retry.
+  Future<Map<String, dynamic>> sendMessage(String text, {String? clientMessageId}) {
+    return _postJson('/messages', {'text': text, 'client_message_id': clientMessageId ?? newMessageId()});
+  }
+
+  String newMessageId() =>
+      '${DateTime.now().microsecondsSinceEpoch.toRadixString(36)}-${_random.nextInt(1 << 32).toRadixString(36)}';
 
   Future<Map<String, dynamic>> _getJson(String path) async {
     final body = await _send('GET', path);
@@ -119,13 +96,26 @@ class OjaApi {
     throw OjaApiException(500, 'Unexpected list response from $path.');
   }
 
-  Future<Map<String, dynamic>> _postJson(String path, Map<String, dynamic> payload) async {
-    final body = await _send('POST', path, payload: payload);
+  Future<Map<String, dynamic>> _postJson(String path, Map<String, dynamic> payload, {bool auth = true}) async {
+    final body = await _send('POST', path, payload: payload, auth: auth);
     if (body is Map<String, dynamic>) return body;
     throw OjaApiException(500, 'Unexpected response from $path.');
   }
 
-  Future<Object?> _send(String method, String path, {Map<String, dynamic>? payload}) async {
+  /// Sends one request. A 401 on a trader call (expired or unknown token) signs in again once and retries.
+  Future<Object?> _send(String method, String path, {Map<String, dynamic>? payload, bool auth = true}) async {
+    if (auth && _token == null) await signIn();
+    try {
+      return await _sendOnce(method, path, payload: payload, auth: auth);
+    } on OjaApiException catch (error) {
+      if (!auth || error.statusCode != 401) rethrow;
+      _token = null;
+      await signIn();
+      return _sendOnce(method, path, payload: payload, auth: auth);
+    }
+  }
+
+  Future<Object?> _sendOnce(String method, String path, {Map<String, dynamic>? payload, required bool auth}) async {
     final uri = Uri.parse('$baseUrl$path');
     late final HttpClientRequest request;
     try {
@@ -135,38 +125,39 @@ class OjaApi {
     }
 
     request.headers.set(HttpHeaders.acceptHeader, 'application/json');
+    if (auth && _token != null) {
+      request.headers.set(HttpHeaders.authorizationHeader, 'Bearer $_token');
+    }
     if (payload != null) {
       request.headers.contentType = ContentType.json;
       request.add(utf8.encode(jsonEncode(payload)));
     }
 
+    // Render's starter instance can take a while on the first call after a deploy.
     final response = await request.close().timeout(const Duration(seconds: 60));
     final raw = await response.transform(utf8.decoder).join();
     Object? decoded;
     if (raw.isNotEmpty) {
-      decoded = jsonDecode(raw);
+      try {
+        decoded = jsonDecode(raw);
+      } on FormatException {
+        decoded = null;
+      }
     }
 
     if (response.statusCode >= 200 && response.statusCode < 300) {
       return decoded;
     }
 
-    throw OjaApiException(response.statusCode, _errorMessage(decoded, response.statusCode));
-  }
-
-  String _errorMessage(Object? decoded, int statusCode) {
-    if (decoded is Map) {
-      final detail = decoded['detail'];
-      if (detail is String && detail.isNotEmpty) return detail;
-      if (detail is Map && detail['message'] is String) return detail['message'] as String;
-      if (detail is List && detail.isNotEmpty) {
-        final first = detail.first;
-        if (first is Map && first['msg'] is String) return first['msg'] as String;
-        return detail.toString();
-      }
-      if (decoded['message'] is String) return decoded['message'] as String;
+    final error = decoded is Map ? decoded['error'] : null;
+    if (error is Map) {
+      throw OjaApiException(
+        response.statusCode,
+        (error['message'] as String?) ?? 'API error (${response.statusCode}).',
+        code: error['code'] as String?,
+      );
     }
-    return 'API error ($statusCode).';
+    throw OjaApiException(response.statusCode, 'API error (${response.statusCode}).');
   }
 
   void close() => _client.close(force: true);
