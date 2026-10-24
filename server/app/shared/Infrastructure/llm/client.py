@@ -6,7 +6,8 @@ from collections.abc import Callable
 from functools import lru_cache
 from typing import Any
 
-import httpx
+from openai import OpenAI, OpenAIError, RateLimitError
+from openai.types.chat import ChatCompletion
 
 from app.shared.env import settings
 
@@ -17,7 +18,11 @@ class LLMError(Exception):
 
 class LLMClient:
     """The one way the app calls a language model (NFR-8): timeout, max_tokens, an in-memory cache of
-    identical requests, a call counter, and one retry when the provider rate-limits (HTTP 429, BR-A6)."""
+    identical requests, a call counter, and one retry when the provider rate-limits (HTTP 429, BR-A6).
+
+    Requests go through the OpenAI SDK (any OpenAI-compatible provider at LLM_BASE_URL). The SDK's own
+    retries are off (max_retries=0) so that the single, capped rate-limit retry below is the only one.
+    """
 
     def __init__(
         self,
@@ -30,6 +35,7 @@ class LLMClient:
         rate_limit_max_wait_seconds: float,
         cache_size: int = 256,
         sleep: Callable[[float], None] = time.sleep,
+        openai_client: OpenAI | None = None,
     ):
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
@@ -42,6 +48,8 @@ class LLMClient:
         self.sleep = sleep
         self.calls = 0
         self._cache: OrderedDict[str, dict[str, Any]] = OrderedDict()
+        # Built on first use: the SDK refuses an empty key, and the app must still start without one.
+        self._openai = openai_client
 
     def complete_json(self, system_prompt: str, payload: dict[str, Any]) -> dict[str, Any]:
         user_content = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
@@ -53,17 +61,21 @@ class LLMClient:
         if not self.api_key:
             raise LLMError("LLM is not configured. Set LLM_API_KEY.")
         try:
-            response = self._post(system_prompt, user_content)
-            if response.status_code == 429:
+            try:
+                completion = self._create(system_prompt, user_content)
+            except RateLimitError as error:
                 # Free tiers rate-limit bursts: wait once, briefly, then retry a single time.
-                self.sleep(self._rate_limit_wait(response.headers.get("retry-after")))
-                response = self._post(system_prompt, user_content)
-            response.raise_for_status()
-            content = response.json()["choices"][0]["message"]["content"]
+                self.sleep(self._rate_limit_wait(error.response.headers.get("retry-after")))
+                completion = self._create(system_prompt, user_content)
+            content = completion.choices[0].message.content
+            if content is None:
+                raise LLMError("LLM returned a malformed response.")
             parsed = json.loads(content)
-        except httpx.HTTPError as error:
-            raise LLMError(f"LLM request failed: {type(error).__name__}") from error
-        except (KeyError, IndexError, TypeError, json.JSONDecodeError) as error:
+        except OpenAIError as error:
+            status = getattr(error, "status_code", None)
+            detail = f"HTTP {status}" if status else type(error).__name__
+            raise LLMError(f"LLM request failed: {detail}") from error
+        except (IndexError, json.JSONDecodeError) as error:
             raise LLMError("LLM returned a malformed response.") from error
         if not isinstance(parsed, dict):
             raise LLMError("LLM returned JSON that is not an object.")
@@ -74,22 +86,27 @@ class LLMClient:
             self._cache.popitem(last=False)
         return result
 
-    def _post(self, system_prompt: str, user_content: str) -> httpx.Response:
+    def _client(self) -> OpenAI:
+        if self._openai is None:
+            self._openai = OpenAI(
+                api_key=self.api_key,
+                base_url=self.base_url,
+                timeout=self.timeout_seconds,
+                max_retries=0,
+            )
+        return self._openai
+
+    def _create(self, system_prompt: str, user_content: str) -> ChatCompletion:
         self.calls += 1
-        return httpx.post(
-            f"{self.base_url}/chat/completions",
-            headers={"Authorization": f"Bearer {self.api_key}"},
-            json={
-                "model": self.model,
-                "temperature": 0,
-                "max_tokens": self.max_tokens,
-                "response_format": {"type": "json_object"},
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_content},
-                ],
-            },
-            timeout=self.timeout_seconds,
+        return self._client().chat.completions.create(
+            model=self.model,
+            temperature=0,
+            max_tokens=self.max_tokens,
+            response_format={"type": "json_object"},
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_content},
+            ],
         )
 
     def _rate_limit_wait(self, retry_after: str | None) -> float:
