@@ -23,7 +23,7 @@ MATCH_PROMPT = """Decide which existing customer a merchant's message refers to.
 
 INTENT_PROMPT = """Route a Nigerian merchant's question (Pidgin or English) to one intent. Allowed intents: who_owes, customer_balance, today_total, stock_level, restock_suggestion, unknown. Return JSON only: {"intent": ..., "customer": <name from context.customers or null>, "item": <name from context.items or null>}. Never answer the question yourself."""
 
-REASON_PROMPT = """Write one short sentence (under 20 words) explaining why this supplier is recommended, using only the facts given. Do not add or change any number. Return JSON only: {"reason": "..."}."""
+REASON_PROMPT = """Write one short sentence (under 20 words) explaining why this supplier is recommended, using only the facts given. Write in light Nigerian Pidgin mixed with simple English, the way a Lagos market trader talks. Keep every number, price, name and unit exactly as given, written as digits. Do not add or change any number. Return JSON only: {"reason": "..."}."""
 
 CORRECTION_PATTERN = re.compile(r"^\s*(no+[,.!]?\s+(i\s+mean|na|e\s+be|be)|i\s+mean|correction|actually|sorry[,.]?\s+(i\s+mean|na|e\s+be)|abeg\s+change|change\s+am)\b")
 
