@@ -2,9 +2,9 @@
 
 import json
 import unittest
-from unittest import mock
 
 import httpx
+from openai import OpenAI
 
 import tests.support  # noqa: F401  (test settings first)
 from app.shared.Infrastructure.llm.client import LLMClient, LLMError
@@ -21,17 +21,28 @@ def reply(status: int, body: object = None, retry_after: str | None = None) -> h
 class LLMClientTest(unittest.TestCase):
     def setUp(self) -> None:
         self.waits: list[float] = []
+        self.queue: list[httpx.Response] = []
+        self.posts = 0
+
+        def transport(request: httpx.Request) -> httpx.Response:
+            # The SDK's network layer, faked: each request takes the next queued reply.
+            self.posts += 1
+            return self.queue.pop(0)
+
+        openai_client = OpenAI(
+            api_key="key", base_url="http://llm.invalid/v1", max_retries=0,
+            http_client=httpx.Client(transport=httpx.MockTransport(transport)),
+        )
         self.client = LLMClient(
             base_url="http://llm.invalid/v1", api_key="key", model="m", timeout_seconds=5, max_tokens=100,
             rate_limit_default_wait_seconds=1.5, rate_limit_max_wait_seconds=3, sleep=self.waits.append,
+            openai_client=openai_client,
         )
 
     def call(self, *responses: httpx.Response) -> dict:
-        with mock.patch("httpx.post", side_effect=list(responses)) as post:
-            try:
-                return self.client.complete_json("prompt", {"message": "hi"})
-            finally:
-                self.posts = post.call_count
+        self.queue = list(responses)
+        self.posts = 0
+        return self.client.complete_json("prompt", {"message": "hi"})
 
     def test_rate_limited_once_then_succeeds(self) -> None:
         self.assertEqual(self.call(reply(429, retry_after="2"), reply(200, {"ok": True})), {"ok": True})
