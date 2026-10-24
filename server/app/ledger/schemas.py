@@ -36,6 +36,7 @@ class EntryOut(BaseModel):
     due_date: date | None
     confidence: float | None
     status: str
+    stock_warning: Literal["not_in_inventory", "check_stock"] | None
     raw_text: str
     created_at: datetime
     updated_at: datetime

@@ -53,6 +53,8 @@ class Entry(Base):
     confidence: Mapped[float | None] = mapped_column(Float)
     raw_text: Mapped[str] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(10), server_default="saved")
+    # FR-S25: "not_in_inventory" or "check_stock" when the entry could not move stock as recorded.
+    stock_warning: Mapped[str | None] = mapped_column(String(20))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

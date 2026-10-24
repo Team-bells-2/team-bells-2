@@ -50,6 +50,8 @@ def get_ledger_orchestrator(
         ai_orchestrator,
         transcriber,
         settings.CONFIDENCE_THRESHOLD,
+        settings.CUSTOMER_MATCH_LINK_CONFIDENCE,
+        settings.CUSTOMER_MATCH_CONFIRM_CONFIDENCE,
     )
 
 
@@ -63,18 +65,21 @@ async def post_message(
     fields `audio` (file) and `client_message_id` (FR-S1, S2)."""
     content_type = request.headers.get("content-type", "")
     if content_type.startswith("multipart/form-data"):
-        form = await request.form()
-        audio = form.get("audio")
-        client_message_id = form.get("client_message_id")
-        if not isinstance(audio, UploadFile):
-            raise AppError(422, "validation_error", "audio: a voice note file is required.")
-        if not isinstance(client_message_id, str) or not 1 <= len(client_message_id.strip()) <= 64:
-            raise AppError(422, "validation_error", "client_message_id: 1 to 64 characters required.")
-        max_bytes = settings.STT_MAX_UPLOAD_MB * 1024 * 1024
-        data = await audio.read(max_bytes + 1)
-        if len(data) > max_bytes:
-            raise AppError(413, "audio_too_large", f"Voice notes must be {settings.STT_MAX_UPLOAD_MB} MB or smaller.")
-        audio_type = (audio.content_type or "").split(";", maxsplit=1)[0].strip().lower()
+        # The form owns the upload's temporary file; leaving the block closes it.
+        async with request.form() as form:
+            audio = form.get("audio")
+            client_message_id = form.get("client_message_id")
+            if not isinstance(audio, UploadFile):
+                raise AppError(422, "validation_error", "audio: a voice note file is required.")
+            if not isinstance(client_message_id, str) or not 1 <= len(client_message_id.strip()) <= 64:
+                raise AppError(422, "validation_error", "client_message_id: 1 to 64 characters required.")
+            max_bytes = settings.STT_MAX_UPLOAD_MB * 1024 * 1024
+            data = await audio.read(max_bytes + 1)
+            if len(data) > max_bytes:
+                raise AppError(
+                    413, "audio_too_large", f"Voice notes must be {settings.STT_MAX_UPLOAD_MB} MB or smaller."
+                )
+            audio_type = (audio.content_type or "").split(";", maxsplit=1)[0].strip().lower()
         return await run_in_threadpool(
             orchestrator.handle_voice_message, trader.id, client_message_id.strip(), data, audio_type
         )

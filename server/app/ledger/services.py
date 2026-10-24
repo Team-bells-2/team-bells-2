@@ -1,13 +1,67 @@
 import re
+from collections.abc import Iterable
+from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from app.ai.schemas import Interpretation
+from app.customers.models import Customer
 from app.ledger.models import Entry
 from app.ledger.schemas import EntryOut, ExtractedEntry
 
 NOT_UNDERSTOOD_MESSAGE = "Sorry, I didn't catch that. Can you say it again?"
 FALLBACK_MESSAGE = "I can record sales, credit sales, payments and expenses. Tell me what you sold, collected or spent."
+NOT_SAVED_MESSAGE = "Okay, I didn't save it. Tell me again what happened."
+WHICH_CUSTOMER_QUESTION = "Which customer is this for?"
+
+# Answers to "Do you mean ...?" and "Just to confirm ...?", detected in code (BR-L6).
+_YES_PATTERN = re.compile(r"^\s*(yes|yeah|yep|correct|exactly|na\s+(she|he|am|her|him)|e\s+be\s+so|ehen|ehn|ok)\b")
+_NO_PATTERN = re.compile(r"^\s*(no|nope|not\s+(her|him)|no\s+be\s+(she|he|am))\b")
+
+# Pending-clarification bookkeeping kept inside partial_entry, never part of the entry itself.
+PENDING_TEXTS = "raw_texts"
+PENDING_KIND = "_kind"  # "missing", "confirm_entry" or "confirm_customer"
+PENDING_CANDIDATE = "_candidate"
+PENDING_MENTION = "_mention"
+_PENDING_KEYS = {PENDING_TEXTS, PENDING_KIND, PENDING_CANDIDATE, PENDING_MENTION}
+
+
+def is_yes(text: str) -> bool:
+    return bool(_YES_PATTERN.search(text.casefold()))
+
+
+def is_no(text: str) -> bool:
+    return bool(_NO_PATTERN.search(text.casefold()))
+
+
+def entry_fields(partial: dict[str, Any]) -> dict[str, Any]:
+    """The entry's own fields from a pending partial entry, without the bookkeeping keys."""
+    return {key: value for key, value in partial.items() if key not in _PENDING_KEYS}
+
+
+def customers_named_in(text: str, aliases: Iterable[tuple[str, Customer]]) -> list[Customer]:
+    """Customers with an alias appearing in the text as whole words, ignoring case (BR-L5)."""
+    lowered = text.casefold()
+    found: dict[int, Customer] = {}
+    for alias, customer in aliases:
+        if re.search(rf"\b{re.escape(alias.casefold())}\b", lowered):
+            found[customer.id] = customer
+    return list(found.values())
+
+
+def starts_over(text: str, new: ExtractedEntry, pending_fields: dict[str, Any]) -> bool:
+    """A different, complete entry sent while a question is pending replaces the pending entry (BR-L2).
+    A yes/no answer or a short reply never does."""
+    if is_yes(text) or is_no(text) or len(text.split()) < 3:
+        return False
+    if missing_fields(new.model_dump(mode="json", exclude_none=True)) or not (new.item or new.customer):
+        return False
+
+    def differs(field: str) -> bool:
+        value, pending_value = getattr(new, field), pending_fields.get(field)
+        return bool(value and pending_value and str(value).casefold() != str(pending_value).casefold())
+
+    return new.type != pending_fields.get("type") or differs("item") or differs("customer")
 
 _NUMBER_WORDS: dict[str, int] = {
     "zero": 0, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7,
@@ -66,9 +120,31 @@ def parse_naira_amount(text: str) -> Decimal | None:
         return None
 
 
-def to_extracted(interpretation: Interpretation) -> ExtractedEntry:
-    """Interpretation to ledger fields; the amount comes from code parsing the quoted phrase."""
+_WEEKDAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+
+
+def resolve_due_date(text: str, today: date) -> date | None:
+    """A relative due phrase to a date, in code, never by the model (FR-S12, BR-A2):
+    "tomorrow" / "tmrw" +1, "next tomorrow" +2, "next week" +7, a weekday name -> its next
+    occurrence (the same weekday as today -> a week ahead). None when not recognised."""
+    lowered = text.casefold()
+    if re.search(r"\bnext\s+tomorrow\b", lowered):
+        return today + timedelta(days=2)
+    if re.search(r"\b(tomorrow|tmrw)\b", lowered):
+        return today + timedelta(days=1)
+    if re.search(r"\bnext\s+week\b", lowered):
+        return today + timedelta(days=7)
+    for index, day in enumerate(_WEEKDAYS):
+        if re.search(rf"\b{day}\b", lowered):
+            return today + timedelta(days=(index - today.weekday()) % 7 or 7)
+    return None
+
+
+def to_extracted(interpretation: Interpretation, today: date) -> ExtractedEntry:
+    """Interpretation to ledger fields; the amount and the due date come from code parsing the
+    phrases the model quoted, against the trader's current date."""
     amount = parse_naira_amount(interpretation.amount_text) if interpretation.amount_text else None
+    due_date = resolve_due_date(interpretation.due_text, today) if interpretation.due_text else None
     return ExtractedEntry(
         type=interpretation.type,
         item=interpretation.item or None,
@@ -76,7 +152,7 @@ def to_extracted(interpretation: Interpretation) -> ExtractedEntry:
         unit=interpretation.unit or None,
         amount_ngn=amount,
         customer=interpretation.customer or None,
-        due_date=interpretation.due_date,
+        due_date=due_date,
         confidence=interpretation.confidence,
     )
 
@@ -100,7 +176,7 @@ SALE_TYPES = {"sale", "credit_sale"}
 _QUESTIONS = {
     "type": "Was this a sale, a credit sale, a payment or an expense?",
     "amount_ngn": "How much was it?",
-    "customer": "Who is the customer?",
+    "customer": WHICH_CUSTOMER_QUESTION,
 }
 
 _TYPE_LABELS = {
@@ -113,7 +189,7 @@ _TYPE_LABELS = {
 
 def merge_partial(partial: dict[str, Any], extracted: ExtractedEntry) -> dict[str, Any]:
     """Fill the pending partial entry with whatever the new message supplies."""
-    return {**partial, **extracted.model_dump(mode="json", exclude_none=True)}
+    return {**entry_fields(partial), **extracted.model_dump(mode="json", exclude_none=True)}
 
 
 def missing_fields(fields: dict[str, Any]) -> list[str]:
@@ -127,9 +203,20 @@ def missing_fields(fields: dict[str, Any]) -> list[str]:
     return missing
 
 
-def clarification_question(missing: list[str]) -> str:
-    """Fallback wording when the interpreter does not phrase the question; always one question."""
-    return _QUESTIONS[missing[0]]
+def missing_question(fields: dict[str, Any]) -> str:
+    """One question for the first missing field, using what is already known (BR-L3), e.g.
+    "How much did you collect for the 2.5 bags?" (FR-S5 acceptance)."""
+    first = missing_fields(fields)[0]
+    quantity, unit = fields.get("quantity"), fields.get("unit")
+    if first == "amount_ngn" and quantity is not None and unit:
+        amount = Decimal(str(quantity))
+        verb = "pay" if fields.get("type") == "expense" else "collect"
+        return f"How much did you {verb} for the {amount.normalize():f} {plural_unit(unit, amount)}?"
+    return _QUESTIONS[first]
+
+
+def plural_unit(unit: str, quantity: Decimal) -> str:
+    return unit if quantity <= 1 or unit.endswith("s") or unit.casefold() == "kg" else f"{unit}s"
 
 
 def ambiguous_customer_question(names: list[str]) -> str:
@@ -162,7 +249,7 @@ def build_confirmation(entry: Entry, customer_name: str | None, corrected: bool)
         parts.append(f"{'from' if entry.type == 'payment_received' else 'to'} {customer_name}")
     parts.append(f"for {format_naira(entry.amount_ngn)}")
     if entry.due_date:
-        parts.append(f"due {entry.due_date.isoformat()}")
+        parts.append(f"due {entry.due_date:%a %d %b}")  # "due Fri 30 Oct" (BR-L12)
     prefix = "Updated" if corrected else "Saved"
     return f"{prefix}: {' '.join(parts)}."
 
@@ -193,6 +280,7 @@ def to_entry_out(entry: Entry, customer_name: str | None) -> EntryOut:
         due_date=entry.due_date,
         confidence=entry.confidence,
         status=entry.status,
+        stock_warning=entry.stock_warning,  # pyright: ignore[reportArgumentType]  (only the ledger writes it)
         raw_text=entry.raw_text,
         created_at=entry.created_at,
         updated_at=entry.updated_at,
