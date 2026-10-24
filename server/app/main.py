@@ -1,5 +1,7 @@
 from fastapi import FastAPI
 
+from app.ask.router import router as ask_router
+from app.consent.router import router as consent_router
 from app.customers.router import router as customers_router
 from app.home.router import router as home_router
 from app.inventory.router import router as inventory_router
@@ -19,6 +21,8 @@ app.include_router(ledger_router)
 app.include_router(inventory_router)
 app.include_router(home_router)
 app.include_router(suggestions_router)
+app.include_router(ask_router)
+app.include_router(consent_router)
 
 
 @app.get("/health")

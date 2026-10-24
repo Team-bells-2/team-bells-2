@@ -16,6 +16,7 @@ if config.config_file_name is not None:
 
 # Every slice's entities, imported so their tables register on Base.metadata for autogenerate.
 # Add a line here when a new slice gains a models.py with tables.
+import app.consent.models  # noqa: E402, F401  access_requests, access_tokens, access_log
 import app.customers.models  # noqa: E402, F401  customers, customer_aliases
 import app.inventory.models  # noqa: E402, F401  inventory_items, stock_movements
 import app.ledger.models  # noqa: E402, F401  entries, entry_edits, pending_clarifications, processed_messages
