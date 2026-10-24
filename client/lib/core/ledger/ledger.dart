@@ -336,9 +336,11 @@ String _reason(Offer offer, List<Offer> peers, int needed) {
   return 'Rated ${offer.rating} from ${offer.reviews} reviews.';
 }
 
+const _greeting = 'Tell me what you sold, who paid, or where you fit buy.';
+
 class OjaBook {
   final lines = <ChatLine>[
-    ChatLine(false, 'Tell me what you sold, who paid, or where you fit buy.'),
+    ChatLine(false, _greeting),
   ];
   final entries = <LedgerEntry>[];
   final stock = <String, double>{'rice': 10, 'beans': 8, 'garri': 14, 'oil': 6};
@@ -482,6 +484,22 @@ class OjaBook {
     } finally {
       busy = false;
     }
+  }
+
+  /// Restores the assistant chat from the server after a restart: the greeting, then the stored turns.
+  Future<void> loadChatHistory() async {
+    final client = api;
+    if (client == null) return;
+    final result = await client.getChatHistory();
+    final rows = result['messages'];
+    if (rows is! List) return;
+    lines
+      ..clear()
+      ..add(ChatLine(false, _greeting))
+      ..addAll([
+        for (final row in rows)
+          if (row is Map && row['text'] is String) ChatLine(row['role'] == 'trader', row['text'] as String),
+      ]);
   }
 
   Future<void> loadMarketOffers(String itemKey) async {

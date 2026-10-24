@@ -61,6 +61,9 @@ class OjaApi {
     return _getJsonList('/entries?$query');
   }
 
+  /// The assistant chat, oldest first (`role` is `trader` or `assistant`).
+  Future<Map<String, dynamic>> getChatHistory({int limit = 200}) => _getJson('/messages/history?limit=$limit');
+
   Future<List<Map<String, dynamic>>> getCustomers() => _getJsonList('/customers');
 
   Future<List<Map<String, dynamic>>> getInventory() => _getJsonList('/inventory');

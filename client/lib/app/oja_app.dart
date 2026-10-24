@@ -24,6 +24,7 @@ class _OjaAppState extends State<OjaApp> {
   OjaApi? _api;
   var _tab = 0;
   var _booting = false;
+  var _historyLoaded = false;
   String? _bootError;
 
   @override
@@ -52,6 +53,10 @@ class _OjaAppState extends State<OjaApp> {
   Future<void> _refresh() async {
     try {
       await _book.refreshFromApi();
+      if (!_historyLoaded) {
+        await _book.loadChatHistory();
+        _historyLoaded = true;
+      }
       if (!mounted) return;
       setState(() {
         _booting = false;
