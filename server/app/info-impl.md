@@ -110,7 +110,10 @@ Cross-slice use goes through repositories or orchestrators, never another slice'
 ### demo
 
 - **Endpoints:** `POST /demo/reset` (deletes every trader and their data; keeps locations and suppliers), `POST /demo/seed` (demo trader Tolu Adeyemi in Mushin, PIN 1234, rice/beans/garri/oil with opening stock and garri below its reorder level, customers Mama Ngozi, Mr Bayo, Aunty Funke and Iya Sade with nicknames; returns a fresh session token; safe to run twice). Both return 403 `demo_controls_disabled` unless `DEMO_CONTROLS_ENABLED=true`. The dashboard uses the demo trader's token (no endpoint is readable without a token).
-- **Command:** `python -m app.demo.index` seeds 8 locations and 6 synthetic suppliers (24 offers, 18 reviews); safe to rerun.
+- **Startup seed command:** `python -m app.demo.index` seeds 8 locations and 6 synthetic suppliers
+  (24 offers, 18 reviews), then creates the synthetic demo Trader, inventory and customers only if
+  the `traders` table is empty. It creates no session token. Render and `make dev` run migrations
+  before this command; the command is safe to rerun.
 
 ## 4. Shared infrastructure (`app/shared/`)
 
@@ -140,7 +143,7 @@ Cross-slice use goes through repositories or orchestrators, never another slice'
 | consent | `access_requests`, `access_tokens`, `access_log` |
 | suggestions | `suppliers`, `supplier_offers`, `supplier_reviews` |
 
-Money is `Numeric(14,2)`, quantities `Numeric(14,3)`, timestamps timezone-aware with database defaults, JSON columns are JSONB on PostgreSQL. Migrations (`alembic.ini` at the repo root; `env.py` imports every slice's models): `645c930b9cc6` initial schema → `c3819b46ad50` entry stock warning → `5b14d59c5953` consent tables → `355529bd3baa` PIN login and session expiry. Tables change only through Alembic; `alembic check` must report no drift.
+Money is `Numeric(14,2)`, quantities `Numeric(14,3)`, timestamps timezone-aware with database defaults, JSON columns are JSONB on PostgreSQL. Migrations (`alembic.ini` at the repo root; `env.py` imports every slice's models): `645c930b9cc6` initial schema → `c3819b46ad50` entry stock warning → `5b14d59c5953` consent tables → `355529bd3baa` PIN login and session expiry → `9fd76fded38f` chat messages. Tables change only through Alembic; `alembic check` must report no drift.
 
 ## 6. Configuration (`.env`, see `.env.example`)
 

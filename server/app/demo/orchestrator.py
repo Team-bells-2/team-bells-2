@@ -39,6 +39,7 @@ class DemoOrchestrator:
     def seed_reference_data(self) -> SeedSummary:
         """Add the locations list and synthetic supplier data. Idempotent: existing names are skipped."""
         try:
+            self.seed_repository.acquire_seed_lock()
             summary = self._seed_reference_data()
             self.seed_repository.commit()
         except Exception:
@@ -46,9 +47,24 @@ class DemoOrchestrator:
             raise
         return summary
 
+    def seed_startup_data(self) -> tuple[SeedSummary, bool]:
+        """Seed references, then the synthetic trader graph only for an empty traders table."""
+        try:
+            self.seed_repository.acquire_seed_lock()
+            summary = self._seed_reference_data()
+            demo_trader_seeded = not self.trader_repository.has_any_trader()
+            if demo_trader_seeded:
+                self._create_demo_trader()
+            self.seed_repository.commit()
+        except Exception:
+            self.seed_repository.rollback()
+            raise
+        return summary, demo_trader_seeded
+
     def reset(self) -> ResetResult:
         """No trader accounts left; locations and supplier data loaded (FR-C10)."""
         try:
+            self.seed_repository.acquire_seed_lock()
             self.seed_repository.delete_trader_data()
             summary = self._seed_reference_data()
             self.seed_repository.commit()
@@ -61,6 +77,7 @@ class DemoOrchestrator:
         """The demo trader with starting stock and customers with nicknames, plus a fresh session token.
         Safe to run twice: an existing demo trader just gets a new token."""
         try:
+            self.seed_repository.acquire_seed_lock()
             self._seed_reference_data()
             trader = self.trader_repository.get_trader_by_phone(services.DEMO_TRADER["phone"])
             if trader is None:

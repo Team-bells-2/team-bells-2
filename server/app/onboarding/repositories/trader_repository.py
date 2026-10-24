@@ -5,6 +5,9 @@ from app.shared.Infrastructure.db.base_repository import BaseRepository
 
 
 class TraderRepository(BaseRepository):
+    def has_any_trader(self) -> bool:
+        return self.db.scalar(select(Trader.id).limit(1)) is not None
+
     def get_trader_by_phone(self, phone: str) -> Trader | None:
         return self.db.scalar(select(Trader).where(Trader.phone == phone))
 

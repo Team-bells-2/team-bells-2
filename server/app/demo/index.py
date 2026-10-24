@@ -1,4 +1,6 @@
-"""Seed reference data: `cd server && python -m app.demo.index` (tables must already exist)."""
+"""Seed startup reference and empty-database demo data (tables must already exist)."""
+
+import json
 
 from app.customers.repositories.customer_repository import CustomerRepository
 from app.demo.orchestrator import DemoOrchestrator
@@ -22,8 +24,15 @@ def main() -> None:
             CustomerRepository(db),
             settings.SESSION_TOKEN_TTL_DAYS,
         )
-        summary = orchestrator.seed_reference_data()
-    print(summary.model_dump_json())
+        summary, demo_trader_seeded = orchestrator.seed_startup_data()
+    print(
+        json.dumps(
+            {
+                "reference_data": summary.model_dump(),
+                "demo_trader_seeded": demo_trader_seeded,
+            }
+        )
+    )
 
 
 if __name__ == "__main__":

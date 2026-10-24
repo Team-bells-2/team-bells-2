@@ -6,8 +6,8 @@ PYTHON := .venv/bin/python
 help:
 	@echo "make setup      create .venv and install requirements.txt"
 	@echo "make migrate    apply database migrations (alembic upgrade head)"
-	@echo "make seed       load locations and demo suppliers (safe to rerun)"
-	@echo "make dev        run the API on 0.0.0.0:8000 with reload"
+	@echo "make seed       load reference data and seed a demo trader if none exist"
+	@echo "make dev        migrate, seed startup data, and run the API with reload"
 	@echo "make test       run the backend tests (no API key or network needed)"
 	@echo "make eval       score the 40 eval cases offline (DEMO_MODE rules)"
 	@echo "make eval-live  score the 40 eval cases with the LLM from .env"
@@ -23,6 +23,8 @@ seed:
 	cd server && ../$(PYTHON) -m app.demo.index
 
 dev:
+	.venv/bin/alembic upgrade head
+	cd server && ../$(PYTHON) -m app.demo.index
 	cd server && ../.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 
 test:
