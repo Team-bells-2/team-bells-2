@@ -29,6 +29,9 @@ class Settings(BaseSettings):
     LLM_MODEL: str = Field(default=...)
     LLM_TIMEOUT_SECONDS: float = Field(default=...)
     LLM_MAX_TOKENS: int = Field(default=...)
+    # On HTTP 429 the call is retried once after Retry-After seconds (capped), or the default wait.
+    LLM_RATE_LIMIT_DEFAULT_WAIT_SECONDS: float = Field(default=...)
+    LLM_RATE_LIMIT_MAX_WAIT_SECONDS: float = Field(default=...)
 
     # Speech-to-text: any OpenAI-compatible transcription endpoint (whisper.cpp server locally).
     STT_BASE_URL: str = Field(default=...)
@@ -57,12 +60,14 @@ class Settings(BaseSettings):
     SUGGESTION_QUALITY_SCORE_B: float = Field(default=...)
     SUGGESTION_QUALITY_SCORE_C: float = Field(default=...)
 
-    # Demo and access control. Read now; used by the tasks noted (IMPLEMENTATION_PLAN.md).
-    DEMO_MODE: bool = Field(default=...)  # 3.1: no provider calls, rule-based interpretation
-    DEMO_CONTROLS_ENABLED: bool = Field(default=...)  # 3.3: enables POST /demo/reset and /demo/seed
-    SESSION_TOKEN_TTL_DAYS: int = Field(default=...)  # 3.5: trader session lifetime
-    ACCESS_TOKEN_TTL_MINUTES: int = Field(default=...)  # 2.6: lender agent token lifetime
-    CORS_ORIGINS: list[str] = Field(default=...)  # 3.4: allowed browser origins, a JSON list
+    # Demo and access control.
+    DEMO_MODE: bool = Field(default=...)  # no provider calls, rule-based interpretation (NFR-4)
+    DEMO_CONTROLS_ENABLED: bool = Field(default=...)  # enables POST /demo/reset and /demo/seed (FR-C10)
+    SESSION_TOKEN_TTL_DAYS: int = Field(default=...)  # trader session lifetime (BR-O4)
+    AUTH_MAX_FAILED_LOGINS: int = Field(default=...)  # wrong PINs in a row before a lock (BR-O3)
+    AUTH_LOCK_MINUTES: int = Field(default=...)  # how long the lock lasts
+    ACCESS_TOKEN_TTL_MINUTES: int = Field(default=...)  # lender agent token lifetime (FR-S14)
+    CORS_ORIGINS: list[str] = Field(default=...)  # allowed browser origins, a JSON list (NFR-7)
 
 
 settings = Settings()
