@@ -12,12 +12,19 @@ class InterpretationFailed(Exception):
 
 
 class AIOrchestrator:
-    def __init__(self, llm_client: LLMClient):
+    """With demo_mode on, no provider is ever called (NFR-4): messages are read by rules, customer
+    matches are offline guesses (always confirmed), /ask uses keyword routing only, and reasons use
+    the template. With it off, a provider failure is reported, never silently replaced (NFR-3)."""
+
+    def __init__(self, llm_client: LLMClient, demo_mode: bool):
         self.llm_client = llm_client
+        self.demo_mode = demo_mode
 
     def interpret_message(self, text: str, context: dict[str, Any]) -> Interpretation:
         """Validate model output against the schema; on invalid output retry once, then give up.
         Provider failures (LLMError) are not retried and propagate to the caller."""
+        if self.demo_mode:
+            return Interpretation.model_validate(services.demo_interpret(text, context))
         previous_error: str | None = None
         for _ in range(2):
             raw = self.llm_client.complete_json(
@@ -34,6 +41,8 @@ class AIOrchestrator:
         discarded (BR-A7). With no provider, falls back to an offline guess that must be confirmed (BR-L8)."""
         if not customers:
             return None, 0.0
+        if self.demo_mode:
+            return services.guess_customer(mention, customers)
         try:
             raw = self.llm_client.complete_json(services.MATCH_PROMPT, services.match_payload(mention, text, customers))
             match = CustomerMatch.model_validate(raw)
@@ -48,6 +57,8 @@ class AIOrchestrator:
     def route_intent(self, question: str, customers: list[str], items: list[str]) -> IntentChoice | None:
         """The model picks a whitelisted intent and parameters (FR-S11). A customer or item not in the
         trader's lists is dropped (BR-A7). None when the provider fails or the reply is invalid."""
+        if self.demo_mode:
+            return None
         try:
             raw = self.llm_client.complete_json(services.INTENT_PROMPT, services.intent_payload(question, customers, items))
             choice = IntentChoice.model_validate(raw)
@@ -64,6 +75,8 @@ class AIOrchestrator:
         """Wording only. Returns None on any failure so the caller uses its template (FR-S31)."""
         if not facts:
             return []
+        if self.demo_mode:
+            return None
         try:
             raw = self.llm_client.complete_json(services.REASONS_PROMPT, services.reasons_payload(facts))
             reasons = PhrasedReasons.model_validate(raw).reasons
