@@ -1,6 +1,6 @@
 from collections.abc import Sequence
 
-from sqlalchemy import func, select
+from sqlalchemy import Row, func, select
 from app.customers.models import Customer, CustomerAlias
 from app.shared.Infrastructure.db.base_repository import BaseRepository
 
@@ -26,17 +26,25 @@ class CustomerRepository(BaseRepository):
             )
         )
 
-    def find_customers_by_alias(self, trader_id: int, alias: str) -> Sequence[Customer]:
-        """All of the trader's customers with this alias; more than one means the name is ambiguous."""
-        return self.db.scalars(
-            select(Customer)
-            .join(CustomerAlias, CustomerAlias.customer_id == Customer.id)
-            .where(
-                Customer.trader_id == trader_id,
-                func.lower(CustomerAlias.alias) == alias.strip().lower(),
-            )
-            .distinct()
+    def list_aliases(self, trader_id: int) -> Sequence[Row[str, Customer]]:
+        """Every (alias, customer) pair of the trader, for alias matching and the customer list."""
+        return self.db.execute(
+            select(CustomerAlias.alias, Customer)
+            .join(Customer, Customer.id == CustomerAlias.customer_id)
+            .where(Customer.trader_id == trader_id)
+            .order_by(CustomerAlias.id)
         ).all()
+
+    def alias_exists(self, customer_id: int, alias: str) -> bool:
+        return (
+            self.db.scalar(
+                select(CustomerAlias.id).where(
+                    CustomerAlias.customer_id == customer_id,
+                    func.lower(CustomerAlias.alias) == alias.strip().lower(),
+                )
+            )
+            is not None
+        )
 
     def create_customer(self, trader_id: int, canonical_name: str) -> Customer:
         customer = Customer(trader_id=trader_id, canonical_name=canonical_name.strip())

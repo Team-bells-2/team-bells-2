@@ -16,6 +16,16 @@ class InventoryRepository(BaseRepository):
             )
         )
 
+    def get_item(self, trader_id: int, item_id: int) -> InventoryItem | None:
+        return self.db.scalar(
+            select(InventoryItem).where(InventoryItem.trader_id == trader_id, InventoryItem.id == item_id)
+        )
+
+    def create_item(self, item: InventoryItem) -> InventoryItem:
+        self.db.add(item)
+        self.db.flush()
+        return item
+
     def list_items_with_quantity(self, trader_id: int) -> Sequence[Row[tuple[InventoryItem, Decimal]]]:
         """Each item with its quantity on hand, derived from movements in one query."""
         on_hand = func.coalesce(func.sum(StockMovement.quantity_change), 0)

@@ -1,5 +1,5 @@
 from collections.abc import Sequence
-from datetime import datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 
 from sqlalchemy import Row, case, func, select
@@ -10,6 +10,9 @@ from app.shared.Infrastructure.db.base_repository import BaseRepository
 
 
 class EntryRepository(BaseRepository):
+    """Period starts are compared in UTC: correct on any database, including SQLite, which stores
+    timestamps without their zone."""
+
     def create_entry(self, entry: Entry) -> Entry:
         self.db.add(entry)
         self.db.flush()
@@ -43,7 +46,7 @@ class EntryRepository(BaseRepository):
             .where(Entry.trader_id == trader_id, Entry.status == "saved")
         )
         if since is not None:
-            query = query.where(Entry.created_at >= since)
+            query = query.where(Entry.created_at >= since.astimezone(UTC))
         if entry_type is not None:
             query = query.where(Entry.type == entry_type)
         return self.db.execute(
@@ -58,10 +61,33 @@ class EntryRepository(BaseRepository):
         expenses = func.coalesce(func.sum(case((Entry.type == "expense", Entry.amount_ngn), else_=0)), 0)
         row = self.db.execute(
             select(revenue, expenses, func.count(Entry.id)).where(
-                Entry.trader_id == trader_id, Entry.status == "saved", Entry.created_at >= since
+                Entry.trader_id == trader_id, Entry.status == "saved", Entry.created_at >= since.astimezone(UTC)
             )
         ).one()
         return Decimal(row[0]), Decimal(row[1]), int(row[2])
+
+    def entry_times(self, trader_id: int, since: datetime) -> Sequence[datetime]:
+        """When each saved entry since a moment was recorded (for counting active days)."""
+        return self.db.scalars(
+            select(Entry.created_at).where(
+                Entry.trader_id == trader_id, Entry.status == "saved", Entry.created_at >= since.astimezone(UTC)
+            )
+        ).all()
+
+    def customers_with_past_due_credit(self, trader_id: int, today: date) -> set[int]:
+        """Customers with a saved credit sale due before today (FR-S12); combined with a balance for overdue."""
+        rows = self.db.scalars(
+            select(Entry.customer_id)
+            .where(
+                Entry.trader_id == trader_id,
+                Entry.status == "saved",
+                Entry.type == "credit_sale",
+                Entry.customer_id.is_not(None),
+                Entry.due_date < today,
+            )
+            .distinct()
+        ).all()
+        return {int(customer_id) for customer_id in rows if customer_id is not None}
 
     def customer_balances(self, trader_id: int) -> dict[int, Decimal]:
         """Balance per customer: credit sales add, payments subtract (FR-S10). One grouped query."""

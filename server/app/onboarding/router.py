@@ -1,6 +1,8 @@
 from fastapi import APIRouter, Depends
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
+from app.inventory.dependencies import get_inventory_repository
+from app.inventory.repositories.inventory_repository import InventoryRepository
 from app.onboarding.dependencies import get_location_repository, get_session_repository, get_trader_repository
 from app.onboarding.models import Trader
 from app.onboarding.orchestrator import OnboardingOrchestrator
@@ -18,8 +20,9 @@ def get_onboarding_orchestrator(
     location_repository: LocationRepository = Depends(get_location_repository),
     trader_repository: TraderRepository = Depends(get_trader_repository),
     session_repository: SessionRepository = Depends(get_session_repository),
+    inventory_repository: InventoryRepository = Depends(get_inventory_repository),
 ) -> OnboardingOrchestrator:
-    return OnboardingOrchestrator(location_repository, trader_repository, session_repository)
+    return OnboardingOrchestrator(location_repository, trader_repository, session_repository, inventory_repository)
 
 
 def get_current_trader(

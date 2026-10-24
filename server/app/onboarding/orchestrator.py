@@ -1,3 +1,5 @@
+from app.inventory.models import InventoryItem, StockMovement
+from app.inventory.repositories.inventory_repository import InventoryRepository
 from app.onboarding import services
 from app.onboarding.models import Trader
 from app.onboarding.repositories.location_repository import LocationRepository
@@ -13,13 +15,16 @@ class OnboardingOrchestrator:
         location_repository: LocationRepository,
         trader_repository: TraderRepository,
         session_repository: SessionRepository,
+        inventory_repository: InventoryRepository,
     ):
         self.location_repository = location_repository
         self.trader_repository = trader_repository
         self.session_repository = session_repository
+        self.inventory_repository = inventory_repository
 
     def onboard_trader(self, request: OnboardingRequest) -> tuple[str, Trader]:
-        """Create the trader and a session in one transaction; return the plain token once."""
+        """Create the trader, its main items with opening stock, and a session in one transaction
+        (FR-S21, BR-O1); return the plain token once."""
         location = self.location_repository.get_location_by_name(request.location_name)
         if location is None:
             raise AppError(422, "unknown_location", f"'{request.location_name}' is not a supported market or area.")
@@ -29,6 +34,23 @@ class OnboardingOrchestrator:
         token = services.generate_session_token()
         try:
             trader = self.trader_repository.create_trader(services.build_trader(request, location))
+            for main_item in request.items:
+                item = self.inventory_repository.create_item(
+                    InventoryItem(
+                        trader_id=trader.id,
+                        name=main_item.name,
+                        unit=main_item.unit,
+                        unit_cost_ngn=main_item.unit_cost_ngn,
+                        reorder_level=main_item.reorder_level,
+                        reorder_quantity=main_item.reorder_quantity,
+                    )
+                )
+                if main_item.opening_quantity is not None:
+                    self.inventory_repository.add_movement(
+                        StockMovement(
+                            inventory_item_id=item.id, quantity_change=main_item.opening_quantity, reason="opening"
+                        )
+                    )
             self.session_repository.create_session(trader.id, services.hash_token(token))
             self.trader_repository.commit()
         except Exception:
