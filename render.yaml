@@ -97,8 +97,10 @@ services:
       - key: SUGGESTION_QUALITY_SCORE_C
         value: "0.4"
       # Demo and access control. Demo controls stay off on a shared deployment.
+      # DEMO_MODE=true reads messages with built-in rules and makes no model calls, so the app
+      # works with no API key. After entering LLM_API_KEY (and STT_API_KEY), set it to "false".
       - key: DEMO_MODE
-        value: "false"
+        value: "true"
       - key: DEMO_CONTROLS_ENABLED
         value: "false"
       - key: SESSION_TOKEN_TTL_DAYS
