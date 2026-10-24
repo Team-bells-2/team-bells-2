@@ -3,6 +3,13 @@ OJA backend: open items to resolve with the team
 
 1. Item name matching (inventory, ledger and suggestions)
 
+   Done for the demo (2026-10-24, task 4.4): items and units are compared with
+   app/shared/matching.py:match_key, which ignores case, extra spaces and a plural ending
+   ("rices" = "rice", "bags" = "bag", "tomatoes" = "tomato"). A sale in a different
+   unit ("cups" vs "bag") is saved with no stock movement and flagged check_stock.
+   Still open (options a to c below): synonyms such as "palm oil" vs "oil" or
+   "bag of rice", item aliases, and an LLM fallback for item names.
+
    Problem:
    Items are matched by exact name, ignoring only case and surrounding spaces.
    - Ledger -> inventory (FR-S25, FR-S26): a sale or expense only moves stock when its item

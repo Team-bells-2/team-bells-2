@@ -4,6 +4,7 @@ from decimal import Decimal
 from sqlalchemy import Row, func, select
 
 from app.shared.Infrastructure.db.base_repository import BaseRepository
+from app.shared.matching import match_key
 from app.suggestions.models import Supplier, SupplierOffer, SupplierReview
 
 
@@ -21,9 +22,11 @@ class SupplierRepository(BaseRepository):
             .group_by(SupplierReview.supplier_id)
             .subquery()
         )
-        return self.db.execute(
+        rows = self.db.execute(
             select(SupplierOffer, Supplier, ratings.c.average_rating, ratings.c.review_count)
             .join(Supplier, Supplier.id == SupplierOffer.supplier_id)
             .outerjoin(ratings, ratings.c.supplier_id == Supplier.id)
-            .where(func.lower(SupplierOffer.item) == item.strip().lower())
         ).all()
+        # Item names are matched with match_key ("rices" = "rice"); the demo offer list is small.
+        key = match_key(item)
+        return [row for row in rows if match_key(row[0].item) == key]

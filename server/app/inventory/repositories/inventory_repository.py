@@ -5,16 +5,16 @@ from sqlalchemy import Row, func, select
 
 from app.inventory.models import InventoryItem, StockMovement
 from app.shared.Infrastructure.db.base_repository import BaseRepository
+from app.shared.matching import match_key
 
 
 class InventoryRepository(BaseRepository):
     def get_item_by_name(self, trader_id: int, name: str) -> InventoryItem | None:
-        return self.db.scalar(
-            select(InventoryItem).where(
-                InventoryItem.trader_id == trader_id,
-                func.lower(InventoryItem.name) == name.strip().lower(),
-            )
-        )
+        """Matched with match_key (case, spaces and a plural ending ignored). A trader's inventory is
+        small, so the comparison is done here rather than in SQL."""
+        key = match_key(name)
+        items = self.db.scalars(select(InventoryItem).where(InventoryItem.trader_id == trader_id)).all()
+        return next((item for item in items if match_key(item.name) == key), None)
 
     def get_item(self, trader_id: int, item_id: int) -> InventoryItem | None:
         return self.db.scalar(

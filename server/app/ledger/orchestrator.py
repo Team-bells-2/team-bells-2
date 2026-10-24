@@ -27,6 +27,7 @@ from app.shared.Infrastructure.SST.client import (
     Transcriber,
     TranscriptionError,
 )
+from app.shared.matching import match_key
 from app.shared.periods import LAGOS
 
 # Outcome of resolving a customer mention: (kind, customer, detail).
@@ -612,7 +613,8 @@ class LedgerOrchestrator:
     def _apply_stock_effect(self, trader_id: int, entry: Entry) -> list[Any]:
         """Keep the entry's single stock movement in line with the entry (FR-S25, S26; BR-L9).
         Stock only changes through these rules; model output cannot act on inventory directly (NFR-1).
-        A sale larger than the stock on hand is saved and flagged "check_stock", with no movement.
+        A sale larger than the stock on hand, or in a different unit, is saved and flagged "check_stock",
+        with no movement. Item and unit names are compared with match_key.
         """
         item = (
             self.inventory_repository.get_item_by_name(trader_id, entry.item)
@@ -631,6 +633,9 @@ class LedgerOrchestrator:
             if item is not None
             else None
         )
+        if item is not None and effect is not None and entry.unit and match_key(entry.unit) != match_key(item.unit):
+            # A different unit cannot be counted against this item's stock ("cups" vs "bag").
+            warning, effect = "check_stock", None
         if item is not None and effect is not None and effect[1] == "sale":
             available = self.inventory_repository.get_quantity_on_hand(item.id)
             if existing and existing.inventory_item_id == item.id:
