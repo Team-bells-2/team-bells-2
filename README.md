@@ -56,6 +56,14 @@ Tables change only through Alembic. After editing models, from the repository ro
 
 Never edit a migration that is already merged.
 
+## Make targets
+
+From the repository root: `make setup`, `make migrate`, `make seed`, `make dev`, `make test`, `make eval` (offline) and `make eval-live` (uses the LLM in `.env`). `make help` lists them.
+
+## Eval harness (FR-S18 to S20)
+
+`server/eval/cases.json` holds 40 Pidgin and English messages (all four entry types, shorthand, nicknames, corrections, clarifying questions; 10 marked hard) with the expected entry or question. `make eval` runs each through `POST /messages` on a fresh in-memory database with the demo trader, prints "N of 40 correct" with expected versus got, and writes `server/eval/results.json`. The cases still need review by someone other than their author (FR-S19).
+
 ## Tests
 
 ```sh
@@ -63,7 +71,7 @@ cd server
 ../.venv/bin/python -m unittest discover -s tests -t .
 ```
 
-The tests use an in-memory SQLite database, a fake LLM and a fake speech-to-text provider, so they need no API key and no network. To run them against PostgreSQL, set `TEST_DATABASE_URL` to a throwaway database: its tables are dropped and recreated for every test.
+The tests use an in-memory SQLite database, a fake LLM and a fake speech-to-text provider, so they need no API key and no network. GitHub Actions runs them on every push to `oja` that touches the backend (`.github/workflows/backend-tests.yml`). To run them against PostgreSQL, set `TEST_DATABASE_URL` to a throwaway database: its tables are dropped and recreated for every test.
 
 ## AI tools used (NFR-12)
 

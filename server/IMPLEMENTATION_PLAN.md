@@ -273,6 +273,8 @@ Alembic is at `645c930b9cc6` with no drift.
 
 ## Phase 4: Quality and delivery
 
+**Status: done for the demo (2026-10-24).** 4.1 eval harness: 40 drafted cases, offline score 37 of 40 (hard 7 of 10); the cases still need a second reviewer. 4.2 Makefile at the repo root. 4.3 one light GitHub Actions workflow running the backend tests on pushes to `oja` (approved). 4.4 item and unit matching ignores case, spaces and plural endings; a different unit is flagged `check_stock`. 4.5 skipped (sector stays free text).
+
 ### 4.1 Eval harness for the server pipeline (FR-S18 to S20)
 
 **Scope:**
