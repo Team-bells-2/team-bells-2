@@ -25,8 +25,16 @@ class SuggestionOrchestrator:
         self.ai_orchestrator = ai_orchestrator
         self.weights = weights
 
-    def get_suggestions(self, trader: Trader, item: str, quantity: Decimal | None) -> SuggestionsResponse:
-        """Up to 3 suppliers for an item, ranked in code; the model only words the reasons (FR-S30, S31)."""
+    def top_suggestion(self, trader: Trader, item: str, quantity: Decimal) -> SupplierSuggestion | None:
+        """The first-ranked supplier with the template reason, no model call (Home card, FR-S32, BR-H1)."""
+        suggestions = self.get_suggestions(trader, item, quantity, phrase=False).suggestions
+        return suggestions[0] if suggestions else None
+
+    def get_suggestions(
+        self, trader: Trader, item: str, quantity: Decimal | None, phrase: bool = True
+    ) -> SuggestionsResponse:
+        """Up to 3 suppliers for an item, ranked in code; the model only words the reasons (FR-S30, S31).
+        With phrase=False the template reason is used and no model call is made."""
         quantity_needed = quantity if quantity is not None else self._default_quantity(trader.id, item)
 
         candidates = [
@@ -64,7 +72,9 @@ class SuggestionOrchestrator:
             )
             for s in top
         ]
-        reasons = self.ai_orchestrator.phrase_reasons(facts) or [services.template_reason(s) for s in top]
+        reasons = (self.ai_orchestrator.phrase_reasons(facts) if phrase else None) or [
+            services.template_reason(s) for s in top
+        ]
 
         return SuggestionsResponse(
             item=item,

@@ -9,6 +9,8 @@ from app.ledger.repositories.entry_repository import EntryRepository
 from app.onboarding.models import Trader
 from app.onboarding.router import get_current_trader
 from app.shared.periods import Period
+from app.suggestions.orchestrator import SuggestionOrchestrator
+from app.suggestions.router import get_suggestion_orchestrator
 
 router = APIRouter(tags=["home"])
 
@@ -16,8 +18,9 @@ router = APIRouter(tags=["home"])
 def get_home_orchestrator(
     entry_repository: EntryRepository = Depends(get_entry_repository),
     inventory_repository: InventoryRepository = Depends(get_inventory_repository),
+    suggestion_orchestrator: SuggestionOrchestrator = Depends(get_suggestion_orchestrator),
 ) -> HomeOrchestrator:
-    return HomeOrchestrator(entry_repository, inventory_repository)
+    return HomeOrchestrator(entry_repository, inventory_repository, suggestion_orchestrator)
 
 
 @router.get("/home", response_model=HomeSummary)
@@ -26,4 +29,4 @@ def get_home(
     trader: Trader = Depends(get_current_trader),
     orchestrator: HomeOrchestrator = Depends(get_home_orchestrator),
 ) -> HomeSummary:
-    return orchestrator.get_summary(trader.id, period)
+    return orchestrator.get_summary(trader, period)

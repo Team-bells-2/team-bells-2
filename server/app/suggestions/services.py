@@ -2,13 +2,8 @@ import math
 from dataclasses import dataclass
 from decimal import Decimal
 
-_FACTOR_PHRASES: dict[str, str] = {
-    "distance": "close to you",
-    "rating": "well reviewed by other traders",
-    "quality": "good quality",
-    "cost": "good price",
-    "quantity": "enough stock for your order",
-}
+# Below this distance a supplier is described as "in your market".
+_SAME_MARKET_KM = 0.5
 
 
 @dataclass(frozen=True)
@@ -105,10 +100,34 @@ def strongest_factors(scored: ScoredCandidate, count: int = 2) -> list[str]:
     return [name for name, _ in ordered[:count]]
 
 
+def _naira(amount: Decimal) -> str:
+    return f"₦{amount:,.0f}" if amount == amount.to_integral_value() else f"₦{amount:,.2f}"
+
+
+def _factor_phrase(name: str, scored: ScoredCandidate) -> str:
+    """One factor in words, quoting its figure from the database (BR-S2)."""
+    candidate = scored.candidate
+    if name == "distance":
+        if scored.distance_km is None:
+            return "distance unknown"
+        return "in your market" if scored.distance_km < _SAME_MARKET_KM else f"{scored.distance_km:g} km away"
+    if name == "rating":
+        if candidate.average_rating is None:
+            return "no reviews yet"
+        return f"rated {candidate.average_rating:.1f} by {candidate.review_count} traders"
+    if name == "quality":
+        return f"grade {candidate.quality_grade} quality"
+    if name == "cost":
+        return f"{_naira(candidate.unit_price_ngn)} per {candidate.unit}"
+    available = candidate.quantity_available.normalize()
+    unit = candidate.unit if available == 1 or candidate.unit.endswith("s") else f"{candidate.unit}s"
+    return f"has {available:f} {unit} in stock"
+
+
 def template_reason(scored: ScoredCandidate) -> str:
-    """Fallback wording when the model call fails (FR-S31)."""
-    phrases = [_FACTOR_PHRASES[name] for name in strongest_factors(scored)]
-    reason = f"{phrases[0].capitalize()} and {phrases[1]}."
+    """Wording used on Home and whenever the model call fails (FR-S31): the two strongest factors."""
+    first, second = (_factor_phrase(name, scored) for name in strongest_factors(scored))
+    reason = f"Recommended: {first}, {second}."
     if not scored.can_fill:
         reason += " Cannot fill your full quantity."
     return reason
