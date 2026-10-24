@@ -109,19 +109,19 @@ def _factor_phrase(name: str, scored: ScoredCandidate) -> str:
     candidate = scored.candidate
     if name == "distance":
         if scored.distance_km is None:
-            return "distance unknown"
-        return "in your market" if scored.distance_km < _SAME_MARKET_KM else f"{scored.distance_km:g} km away"
+            return "distance no clear"
+        return "e dey your market" if scored.distance_km < _SAME_MARKET_KM else f"e dey {scored.distance_km:g} km away"
     if name == "rating":
         if candidate.average_rating is None:
-            return "no reviews yet"
-        return f"rated {candidate.average_rating:.1f} by {candidate.review_count} traders"
+            return "no review yet"
+        return f"{candidate.review_count} traders rate am {candidate.average_rating:.1f}"
     if name == "quality":
-        return f"grade {candidate.quality_grade} quality"
+        return f"e get grade {candidate.quality_grade} quality"
     if name == "cost":
-        return f"{_naira(candidate.unit_price_ngn)} per {candidate.unit}"
+        return f"na {_naira(candidate.unit_price_ngn)} per {candidate.unit}"
     available = candidate.quantity_available.normalize()
     unit = candidate.unit if available == 1 or candidate.unit.endswith("s") else f"{candidate.unit}s"
-    return f"has {available:f} {unit} in stock"
+    return f"e get {available:f} {unit} for stock"
 
 
 def template_reason(scored: ScoredCandidate) -> str:
@@ -129,5 +129,5 @@ def template_reason(scored: ScoredCandidate) -> str:
     first, second = (_factor_phrase(name, scored) for name in strongest_factors(scored))
     reason = f"Recommended: {first}, {second}."
     if not scored.can_fill:
-        reason += " Cannot fill your full quantity."
+        reason += " E no fit cover your full quantity."
     return reason

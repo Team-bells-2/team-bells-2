@@ -46,6 +46,8 @@ No prose outside the JSON object."""
 
 REASONS_PROMPT = """You write one short reason (max 15 words) per supplier, explaining why it is a good place to restock.
 Use only the facts given for that supplier. Do not add numbers that are not in the facts.
+Write in light Nigerian Pidgin mixed with simple English, the way a Lagos market trader talks.
+Keep every number, price, name and unit exactly as given, written as digits.
 Return exactly one JSON object: {"reasons": [string, ...]} with one reason per supplier, in the same order."""
 
 
