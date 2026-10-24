@@ -100,3 +100,28 @@ SUPPLIERS: list[dict[str, Any]] = [
 
 def as_decimal(value: str) -> Decimal:
     return Decimal(value)
+
+
+# SYNTHETIC DEMO TRADER for POST /demo/seed (FR-C10, BR-D1). Garri starts below its reorder level so
+# the restock card shows on Home (golden path step 7).
+DEMO_TRADER: dict[str, str] = {
+    "name": "Tolu Adeyemi",
+    "phone": "08030000001",
+    "business_name": "Tolu Foodstuff Store",
+    "sector": "foodstuff",
+    "location_name": "Mushin",
+}
+DEMO_PIN = "1234"
+# (name, unit, unit cost, opening quantity, reorder level, reorder quantity)
+DEMO_ITEMS: list[tuple[str, str, str, str, str, str]] = [
+    ("rice", "bag", "58000", "10", "3", "10"),
+    ("beans", "bag", "68000", "6", "2", "5"),
+    ("garri", "bag", "25000", "2", "3", "8"),
+    ("oil", "keg", "36000", "5", "2", "4"),
+]
+DEMO_CUSTOMERS: dict[str, list[str]] = {
+    "Mama Ngozi": ["Ngozi", "the rice woman"],
+    "Mr Bayo": ["Bayo", "Oga Bayo"],
+    "Aunty Funke": ["Funke"],
+    "Iya Sade": ["Sade", "the pepper seller"],
+}
