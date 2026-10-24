@@ -71,7 +71,9 @@ cd server
 ../.venv/bin/python -m unittest discover -s tests -t .
 ```
 
-The tests use an in-memory SQLite database, a fake LLM and a fake speech-to-text provider, so they need no API key and no network. GitHub Actions runs them on every push to `oja` that touches the backend (`.github/workflows/backend-tests.yml`). To run them against PostgreSQL, set `TEST_DATABASE_URL` to a throwaway database: its tables are dropped and recreated for every test.
+The tests use an in-memory SQLite database, a fake LLM and a fake speech-to-text provider, so they need no API key and no network. GitHub Actions (`.github/workflows/backend-tests.yml`) runs on pushes to `oja` and pull requests into `oja` or `main` that touch the backend, in two jobs: the tests on SQLite, and a PostgreSQL 16 job that runs the migrations (upgrade, `alembic check`, full downgrade and back), the seed twice, the same tests on Postgres, and `server/e2e/smoke.py` against a running server in `DEMO_MODE`. Neither job needs secrets or calls a provider.
+
+`server/e2e/smoke.py` can also be run by hand against any server started with `DEMO_CONTROLS_ENABLED=true` (it resets the demo data): `cd server && ../.venv/bin/python -m e2e.smoke --base-url http://127.0.0.1:8000`. Add `--voice clip.m4a` (repeatable) to send recorded voice notes through the server's speech-to-text. To run them against PostgreSQL, set `TEST_DATABASE_URL` to a throwaway database: its tables are dropped and recreated for every test.
 
 ## AI tools used (NFR-12)
 

@@ -1,5 +1,7 @@
-# Runs the backend tests on every push to the oja branch that touches the backend.
-# The tests use an in-memory database and a fake LLM/speech provider: no secrets, database or network.
+# Backend checks for the oja branch. No secrets needed: the LLM and speech-to-text are never called
+# (fakes in the unit tests, DEMO_MODE rules for the live server).
+#   tests:       the repo test suite on in-memory SQLite (fast)
+#   postgres:    migrations, the same tests and an end-to-end smoke run on PostgreSQL 16
 name: Backend tests
 
 on:
@@ -9,10 +11,20 @@ on:
       - "server/**"
       - "requirements.txt"
       - "alembic.ini"
+      - ".env.example"
       - ".github/workflows/backend-tests.yml"
+  pull_request:
+    branches: [oja, main]
+    paths:
+      - "server/**"
+      - "requirements.txt"
+      - "alembic.ini"
+      - ".env.example"
+      - ".github/workflows/backend-tests.yml"
+  workflow_dispatch:
 
 jobs:
-  test:
+  tests:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -22,6 +34,63 @@ jobs:
           python-version: "3.12"
           cache: pip
       - run: pip install -r requirements.txt
-      - name: Run backend tests
+      - name: Run backend tests (SQLite)
         working-directory: server
-        run: python -m unittest discover -s tests -t . -v
+        run: python -m unittest discover -s tests -t .
+
+  postgres:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: oja
+          POSTGRES_PASSWORD: oja
+          POSTGRES_DB: oja
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U oja" --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      # Real environment variables override the .env copied from .env.example below.
+      DATABASE_URL: postgresql+psycopg://oja:oja@localhost:5432/oja
+      TEST_DATABASE_URL: postgresql+psycopg://oja:oja@localhost:5432/oja_test
+      PGPASSWORD: oja
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Settings from .env.example
+        run: cp .env.example .env
+      - name: Create the throwaway test database
+        run: psql -h localhost -U oja -d oja -c "CREATE DATABASE oja_test"
+      - name: Migrations (upgrade, no drift, full downgrade and back)
+        run: |
+          alembic upgrade head
+          alembic check
+          alembic downgrade base
+          alembic upgrade head
+      - name: Seed locations and suppliers (twice, must be safe to rerun)
+        working-directory: server
+        run: |
+          python -m app.demo.index
+          python -m app.demo.index
+      - name: Run backend tests (PostgreSQL)
+        working-directory: server
+        run: python -m unittest discover -s tests -t .
+      - name: End-to-end smoke against a running server
+        working-directory: server
+        # Only this step: the unit tests expect the fake model to be called, so DEMO_MODE must not leak.
+        env:
+          DEMO_MODE: "true"
+          DEMO_CONTROLS_ENABLED: "true"
+        run: |
+          uvicorn app.main:app --host 127.0.0.1 --port 8000 > uvicorn.log 2>&1 &
+          for i in $(seq 1 30); do curl -sf http://127.0.0.1:8000/health > /dev/null && break; sleep 1; done
+          python -m e2e.smoke --base-url http://127.0.0.1:8000
+      - name: Server log
+        if: failure()
+        run: cat server/uvicorn.log || true
