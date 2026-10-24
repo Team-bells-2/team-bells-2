@@ -4,51 +4,79 @@ Speak or type in Pidgin or English, and your books write themselves. OJA is a Fl
 
 The AI interprets messages and phrases explanations. Totals, debts, profit, stock levels and supplier rankings are computed by the database and deterministic code.
 
-Product requirements: [final-prd.md](final-prd.md). Agent rules: [AGENTS.md](AGENTS.md). Client contract: [FRONTEND_HANDOFF.md](FRONTEND_HANDOFF.md).
+- Product requirements: [final-prd.md](final-prd.md)
+- Agent rules: [AGENTS.md](AGENTS.md)
+- API contract for the app: [FRONTEND_HANDOFF.md](FRONTEND_HANDOFF.md)
+- Backend architecture: [server/app/info.md](server/app/info.md)
+- Work plan: [server/IMPLEMENTATION_PLAN.md](server/IMPLEMENTATION_PLAN.md)
 
-## Current OJA Status
+## Repository layout
 
-The OJA backend is under `server/`. All server endpoints in [final-prd.md](final-prd.md) Section 8 are implemented: onboarding and profile, messages (text and voice), entries, customers, ask, home, inventory, suggestions, consent and agent summary. A judges' dashboard is served at `/dashboard`. The Flutter client is not in this repo yet.
+| Path | What it is |
+| --- | --- |
+| `server/` | The OJA backend (FastAPI, SQLAlchemy, PostgreSQL, Alembic), vertical slices under `server/app/` |
+| `client/` | The Flutter app (not yet calling the API) |
+| `backend.py/`, `eval/`, `render.yaml`, `requirements-whisper.txt` | Earlier prototype, kept for reference. Not the OJA API contract |
+| `alembic.ini` | Alembic config; migrations live in `server/app/shared/Infrastructure/db/alembic/` |
+| `requirements.txt` | Python dependencies for `server/` |
+
+## Status
+
+Live: onboarding (with main items), profile, messages (text and voice), entries, customers (aliases, balances, overdue), inventory (read and write), home (with restock cards), restock suggestions, `/ask`, consent and the lender agent summary.
+Not yet: offline `DEMO_MODE`, demo reset and the judges' dashboard, CORS, session expiry. See [server/IMPLEMENTATION_PLAN.md](server/IMPLEMENTATION_PLAN.md).
+
+## Set up and run the backend
+
+Needs Python 3.12+ and PostgreSQL. From the repository root:
+
+```sh
+python -m venv .venv
+.venv/bin/pip install -r requirements.txt
+cp .env.example .env            # then fill in DATABASE_URL, LLM_API_KEY and the rest
+.venv/bin/alembic upgrade head  # create or update the tables
+cd server
+../.venv/bin/python -m app.demo.index   # seed locations and demo suppliers (safe to rerun)
+../.venv/bin/uvicorn app.main:app --reload --port 8000
+```
+
+- API docs: <http://127.0.0.1:8000/docs>
+- Every setting is required and read from `.env` (see `.env.example`). A missing key stops startup with its name.
+- Never commit `.env` or put secrets in client code.
+- Voice notes are transcribed by any OpenAI-compatible endpoint set in `STT_*`. For a local whisper.cpp server, start it with `--convert` (needs ffmpeg) so it accepts M4A as well as WAV.
+
+## Database changes
+
+Tables change only through Alembic. After editing models, from the repository root:
+
+```sh
+.venv/bin/alembic revision --autogenerate -m "describe the change"
+.venv/bin/alembic upgrade head
+.venv/bin/alembic check          # "No new upgrade operations detected." means models and database agree
+```
+
+Never edit a migration that is already merged.
+
+## Tests
 
 ```sh
 cd server
-poetry install
+../.venv/bin/python -m unittest discover -s tests -t .
 ```
 
-Copy the root `.env.example` to `.env` and configure variables used by `server/app/shared/env.py`. Never commit `.env` or place secrets in client code. Use PostgreSQL (`postgresql+psycopg://user:password@localhost:5432/oja`) or, for a laptop demo, SQLite (`sqlite:///./oja.sqlite3`). Tables and the synthetic supplier data are created on startup.
-
-Run the API, from `server/`:
-
-```sh
-uvicorn app.main:app --host 0.0.0.0 --port 8000
-```
-
-Open `http://localhost:8000/dashboard`. With `DEMO_CONTROLS_ENABLED=true`, "Seed demo data" creates the demo trader (phone `08030000001`, Mama Ngozi and other customers with nicknames, starting stock) and puts its session token on the dashboard. The dashboard also has a lender agent screen and a trader console that stands in for the app.
-
-Tables are created on startup but never altered. After pulling a change to the data model, delete the SQLite file (or reset the PostgreSQL database) and seed again.
-
-Offline demo: set `DEMO_MODE=true` to skip every provider call. Extraction then uses the rule-based fallback, which also takes over automatically when the LLM call fails.
-
-Evaluation (FR-S18), from the repository root:
-
-```sh
-PYTHONPATH=server python eval/run_eval.py --adapter app.ai.index:extract_message
-```
+The tests use an in-memory SQLite database, a fake LLM and a fake speech-to-text provider, so they need no API key and no network. To run them against PostgreSQL, set `TEST_DATABASE_URL` to a throwaway database: its tables are dropped and recreated for every test.
 
 ## AI tools used (NFR-12)
 
-- OpenAI API (`OJA_MODEL`, `OJA_STT_MODEL`) for extraction, name matching, intent routing, restock reason wording and speech-to-text.
+- LLM through an OpenAI-compatible endpoint (`LLM_MODEL`): message interpretation and restock reason wording. Amounts, totals and rankings are computed in code.
+- Speech-to-text through an OpenAI-compatible endpoint (`STT_MODEL`), locally whisper.cpp.
 - AI coding assistants: Claude Code (Anthropic). Team members add any others they used.
 
-## Legacy Prototype
+## Prototype
 
-`backend.py/`, `eval/`, `requirements.txt`, `requirements-whisper.txt`, and `render.yaml` are the earlier OJA prototype. They are retained for reference and are not the OJA API contract. The existing Render service may still point at this prototype until deployment configuration is deliberately moved to the new `server/` application.
-
-The prototype can be run from the repository root:
+`backend.py/` is an earlier single-merchant prototype (SQLite, market price comparison, local Whisper). It is kept for reference only. `render.yaml` still deploys it, until deployment is moved to `server/`. To run it:
 
 ```sh
-python -m pip install -r requirements.txt
-uvicorn main:app --app-dir backend.py --reload
+.venv/bin/uvicorn main:app --app-dir backend.py --reload
 ```
 
-It contains earlier SQLite ledger, inventory, market price comparison, Whisper, and schema work. Follow [final-prd.md](final-prd.md) for current OJA behavior and priorities.
+It reads `OPENAI_API_KEY`, `OPENAI_BASE_URL` and `OJA_MODEL` (see the prototype block in `.env.example`).
