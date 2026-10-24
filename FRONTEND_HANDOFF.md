@@ -1,98 +1,306 @@
 # OJA: Frontend Handoff
 
-This contract follows [final-prd.md](final-prd.md), especially Sections 4, 7, and 8. **Status: implemented in `server/`.** The live schema is at `/docs` (OpenAPI) when the server runs.
+The API contract for the Flutter app, the judges' dashboard and the lender agent, as served by `server/` today. Requirements: [final-prd.md](final-prd.md) (sections 4, 7, 8). Live schema: `/docs` when the server runs. Planned work: [server/IMPLEMENTATION_PLAN.md](server/IMPLEMENTATION_PLAN.md).
 
-## Implementation notes the PRD does not spell out
+The response examples below were captured from the running app.
 
-- **Voice:** `POST /messages` takes JSON, not multipart: `{"audio_base64": "...", "audio_filename": "voice.m4a", "client_message_id": "..."}`. The response carries `transcript`. A failed transcription returns `status: "fallback"` and writes nothing, so resend with the same `client_message_id`.
-- **Message statuses:** `saved` (with `confirmation` and `entry`; `updated: true` for a correction), `clarify` (show `question`, send the trader's reply as the next message), `fallback`.
-- **Questions** ("who owes me?") go to `POST /ask`, not `/messages`. Response: `{intent, answer, ...}`.
-- **Consent for agents:** `POST /access-requests` takes `trader_phone`, `agent_name`, `purpose`, `data_scopes` (any of `sales_total`, `active_days`, `total_owed`) and returns `request_id` and a one-time `claim_secret`. The agent polls `GET /access-requests/{id}/status` with header `X-Claim-Secret`; after approval the response carries `access_token` exactly once.
-- **Approve or reject** from the app: `POST /access-requests/{id}/approve` with `{"approve": true|false}`. `GET /access-requests` items include a ready-made `prompt` string and the access `log`.
-- **Home** includes `recent_entries` and, for each low-stock item, `top_suggestion`.
+## Rules for the client
 
-## Accounts: sign-up and login
+- **Base URL:** keep it in config, so the phone can reach the laptop on the local network (e.g. `http://192.168.x.x:8000`).
+- **Auth:** trader endpoints need `Authorization: Bearer <token>`, using the token from `POST /onboarding`. Store it on the device. A `401` means the token is missing or invalid: send the user back to onboarding (FR-C5). The lender agent uses its own access token (see Consent).
+- **JSON:** fields are `snake_case`. Money (`*_ngn`) and quantities are JSON numbers, so format them in the UI. Timestamps are ISO 8601 (UTC). Home and entry periods start at Lagos midnight. Dates (`due_date`) are `YYYY-MM-DD`.
+- **Figures come from the server.** Never compute totals, balances, profit, stock or rankings in the app.
+- **Errors** always have one shape: `{ "error": { "code": "...", "message": "..." } }`. Show `message`, and branch on `code`.
+- **Messages:** generate a new `client_message_id` for each message, and reuse it when you retry the same message. A retry returns the original reply and never creates a second entry (NFR-5).
 
-Phone number plus a 4 to 6 digit PIN. Every auth call returns `{trader_id, session_token, token_type, expires_at}`; send the token as `Authorization: Bearer <token>`.
+## Endpoints
 
-| Endpoint | Body | Notes |
+| Endpoint | Auth | Purpose |
 | --- | --- | --- |
-| `POST /auth/signup` (same as `POST /onboarding`) | onboarding fields + `pin` | 409 if the phone already exists |
-| `POST /auth/login` | `{phone, pin}` | 401 `invalid_credentials`; after 5 wrong PINs, 429 `account_locked` for 5 minutes |
-| `POST /auth/logout` | none | Ends this device's session only. Returns 204 |
-| `POST /auth/change-pin` | `{current_pin, new_pin}` | Returns 204 |
+| `GET /health` | none | Liveness |
+| `POST /onboarding` | none | Create a trader (and their main items), get a session token |
+| `GET /profile`, `PATCH /profile` | token | Read or edit the trader |
+| `POST /messages` | token | Text or voice message: save, correct, clarify or fall back |
+| `GET /entries` | token | Ledger entries, newest first |
+| `GET /customers` | token | Customers with aliases, derived balances and overdue flags |
+| `GET /inventory`, `POST /inventory` | token | List items, add an item |
+| `PATCH /inventory/{id}`, `POST /inventory/{id}/stock` | token | Edit an item's details, record opening stock, restock or adjustment |
+| `GET /home` | token | Profit and loss, total owed, low stock with a restock card, recent entries |
+| `GET /suggestions` | token | Up to 3 restock suppliers for an item |
+| `POST /ask` | token | Questions: who owes me, a customer's balance, today's sales, stock, where to restock |
+| `GET /access-requests`, `POST /access-requests/{id}/approve`, `DELETE /access/{id}` | token | The trader's consent prompt, decision and revoke |
+| `POST /access-requests`, `GET /access-requests/{id}/status` | none / claim secret | Lender agent asks for access and collects its token |
+| `GET /agent/summary` | agent token | Totals-only summary for the lender agent |
 
-App flow: no stored token → Login screen with a "Create account" link to onboarding. Any 401 → back to Login. The demo trader is phone `08030000001`, PIN `1234`.
+### `POST /onboarding`
 
-## Real-time updates (WebSocket)
+`location_name` must be one of the seeded markets or areas: Mile 12, Oyingbo, Ketu, Agege, Mushin, Yaba, Oshodi, Ajah. Matching ignores case, and the trader's coordinates come from the chosen location.
 
-Connect to `ws://<server>/ws?token=<session_token>` after login (use `wss://` behind HTTPS). Actions still use the REST endpoints; the socket only pushes what changed, so screens update without polling. Send the text `ping` every 25 seconds to keep a phone connection alive; the server answers `pong`. A close with code 4401 means the token is invalid: go back to Login. On any other close, reconnect after a few seconds and refetch the screen.
+`items` is optional (up to 40). Each item becomes an inventory item; `opening_quantity` adds its opening stock.
 
-Every message is `{"type": ..., "data": ..., "at": ISO time}`:
+```json
+{ "name": "Ada Obi", "phone": "08031234567", "business_name": "Ada Foods",
+  "sector": "foodstuff", "location_name": "Mile 12",
+  "items": [ { "name": "rice", "unit": "bag", "unit_cost_ngn": 58000, "opening_quantity": 10,
+               "reorder_level": 3, "reorder_quantity": 10 } ] }
+```
 
-| type | data | Refresh |
+`201`:
+
+```json
+{ "token": "L4SaLAHKOgYx…",
+  "trader": { "id": 1, "name": "Ada Obi", "phone": "08031234567", "business_name": "Ada Foods",
+              "sector": "foodstuff", "location_name": "Mile 12", "latitude": 6.605, "longitude": 3.398,
+              "created_at": "2026-10-24T00:00:51Z" } }
+```
+
+| Case | Status | `error.code` |
 | --- | --- | --- |
-| `connected` | `{trader_id}` | |
-| `entry_saved`, `entry_updated` | the entry, as in `GET /entries` | Home, Items logged, Inventory |
-| `inventory_changed` | the item, as in `GET /inventory` | Inventory, Home |
-| `access_requested` | `{id, agent_name, purpose, scopes, prompt}` | Show the Approve / Reject prompt at once (FR-C3) |
-| `access_decided`, `access_revoked` | `{id, status?, expires_at?}` | Profile, connected agents |
-| `access_log` | `{request_id, result}` | Dashboard access log |
-| `profile_updated` | the profile | Profile |
+| Phone already registered | 409 | `phone_taken` |
+| Unknown location | 422 | `unknown_location` |
+| Missing field, or the same item name twice | 422 | `validation_error` |
 
-The server runs one process, so start uvicorn with a single worker.
+### `GET /profile` and `PATCH /profile`
 
-## Client Rules
+GET returns the trader object above. PATCH accepts any of `name`, `business_name`, `sector` and `location_name`, and returns the updated trader. A new location also updates `latitude` and `longitude`. Any other field, such as `phone`, returns `422`.
 
-- The database is the source of truth. Never compute totals, debts, profit, stock, or supplier rankings in the UI.
-- Keep network calls behind one API client. The base URL is configuration so a phone can reach a laptop on the local network.
-- JSON uses `snake_case`; amounts are NGN numbers formatted in the UI; timestamps are ISO 8601.
-- Errors use `{ "error": { "code": "...", "message": "..." } }`. Show failures as retryable, never as success.
-- Trader endpoints use the onboarding session token in `Authorization: Bearer <token>`. Store it on-device; a 401 returns the user to onboarding.
-- Send a client-generated `client_message_id` with each message to prevent duplicate entries on retry.
+### `POST /messages`
 
-## Planned Endpoints
+**Text:** JSON `{ "text": "...", "client_message_id": "a1b2c3" }`.
 
-| Endpoint | Used by | Auth |
+**Voice:** `multipart/form-data` with the fields `audio` (the file, with its real content type) and `client_message_id`. Accepted types: WAV, MP3, M4A, AAC, OGG, WebM, FLAC. Maximum size: `STT_MAX_UPLOAD_MB` (15 MB by default).
+
+**Response** (`200`):
+
+```json
+{ "status": "saved",
+  "message": "Saved: credit sale to Mama Ngozi for ₦60,000 due Fri 30 Oct.",
+  "entry": { "id": 2, "type": "credit_sale", "item": null, "quantity": null, "unit": null,
+             "amount_ngn": 60000.0, "customer": "Mama Ngozi", "due_date": "2026-10-30", "confidence": 0.95,
+             "status": "saved", "stock_warning": null,
+             "raw_text": "Mama Ngozi carry rice sixty k, she go pay Friday",
+             "created_at": "…", "updated_at": "…" },
+  "flags": [],
+  "transcript": null }
+```
+
+| `status` | Meaning | What the app shows |
 | --- | --- | --- |
-| `POST /onboarding` | App | None; returns session token |
-| `GET /profile`, `PATCH /profile` | App | Session token |
-| `POST /messages` (text or voice file) | App | Session token |
-| `GET /entries` (period/type filters, paging) | App, dashboard | Session token (app) |
-| `GET /customers` | App, dashboard | Session token (app) |
-| `POST /ask` | App | Session token |
-| `GET /home?period=today\|7d\|30d` | App | Session token |
-| `GET /inventory`, `POST /inventory` | App | Session token |
-| `PATCH /inventory/{id}`, `POST /inventory/{id}/stock` | App | Session token |
-| `GET /suggestions?item=&quantity=` | App | Session token |
-| `GET /access-requests?status=pending` | App | Session token |
-| `POST /access-requests/{id}/approve` | App | Session token |
-| `DELETE /access/{id}` | App | Session token |
-| `POST /access-requests` | Lender agent | None |
-| `GET /agent/summary` | Lender agent | Scoped bearer token |
-| `GET /health` | CI | None |
+| `saved` | A new entry was saved | `message`; refresh Home and the entries |
+| `corrected` | The last entry was changed in place (same `entry.id`) | `message` |
+| `clarify` | One question; nothing is saved yet | `message` as the assistant's question. Send the trader's reply as the next message |
+| `fallback` | Off-topic message, or the trader said "no" to a confirmation; nothing is saved | `message` |
 
-The contract will be frozen at the end of Sprint 0. Until then, names and response shapes are provisional; coordinate changes with backend and QA before wiring screens.
+- **Questions the assistant asks** (all built by the server):
+  - "How much did you collect for the 2.5 bags?" or "How much did you pay for the 5 bags?" (amount missing)
+  - "How much was it?", "Which customer is this for?"
+  - "Do you mean Mama Ngozi?" (a new name that may be an existing customer). Reply "yes" to link it and remember the name; "no" to create a new customer.
+  - "Do you mean Mama Bisi or Mama Ngozi?" (a name shared by two customers). Reply with the full name.
+  - "Just to confirm: sale of rice, ₦10,000?" (the reading was unsure). Reply "yes" to save, "no" to discard.
+- **Yes and no** are understood in English and Pidgin ("yes", "ok", "na she", "e be so", "no", "no be she").
+- **Starting over:** while a question is waiting, a different, complete entry (for example "I pay transport 2k") replaces the waiting one.
+- **`raw_text`** joins the trader's messages for one entry with ` | ` (e.g. `"I sell two bags and half | 25k"`). For voice it is the transcript, also returned as `transcript`.
+- **`due_date`:** for credit sales, phrases like "Friday", "tomorrow" or "next week" become a date.
+- **`flags` and `entry.stock_warning`:** `not_in_inventory` means a sale of an item the trader doesn't stock. `check_stock` means the sale was larger than the stock on hand: the entry is saved but stock is not moved.
 
-## Screens
+| Error | Status | `error.code` | App action |
+| --- | --- | --- | --- |
+| Assistant unavailable | 503 | `ai_unavailable` | Say so, and retry later with the same `client_message_id` |
+| Voice not understood | 502 | `transcription_failed` | Ask the trader to resend or type |
+| Unsupported or generic audio type | 415 | `unsupported_audio` | Send the real content type |
+| Voice note too large | 413 | `audio_too_large` | Record a shorter note |
+| Correction with nothing to correct | 409 | `no_entry_to_correct` | Show `message` |
+| Missing field | 422 | `validation_error` | Fix the request |
+
+### `GET /entries`
+
+Query parameters: `period` (`today`, `7d` or `30d`), `type` (`sale`, `credit_sale`, `payment_received` or `expense`), `limit` (1 to 200, default 50) and `offset`. Returns a JSON array of entry objects (same shape as `entry` above), newest first.
+
+### `GET /customers`
+
+```json
+[ { "id": 1, "canonical_name": "Mama Ngozi", "aliases": ["the rice woman"], "created_at": "…",
+    "balance_ngn": 30000.0, "overdue": false } ]
+```
+
+- `balance_ngn` is computed from entries: credit sales add and payments subtract. A negative value means the customer overpaid.
+- `overdue` is true while the customer still owes and a credit sale is past its due date.
+
+### Inventory
+
+`GET /inventory` returns the items:
+
+```json
+[ { "id": 2, "name": "garri", "unit": "bag", "quantity_on_hand": 2.0, "unit_cost_ngn": 25000.0,
+    "reorder_level": 3.0, "reorder_quantity": 8.0, "low_stock": true } ]
+```
+
+| Request | Body | Notes |
+| --- | --- | --- |
+| `POST /inventory` → `201` | `{ "name", "unit", "unit_cost_ngn"?, "reorder_level"?, "reorder_quantity"? }` | Same name (ignoring case) → `409 item_exists` |
+| `PATCH /inventory/{id}` | any of the fields above | Never changes quantity; `quantity_on_hand` in the body → `422` |
+| `POST /inventory/{id}/stock` → `201` | `{ "quantity_change": 5, "reason": "opening" \| "restock" \| "adjustment" }` | Opening and restock must be positive; an adjustment may be negative; stock can't go below 0 → `409 negative_stock` |
+
+All three return the item. Another trader's item → `404 item_not_found`. Sales reduce stock through `POST /messages`, never here.
+
+### `GET /home?period=today|7d|30d`
+
+```json
+{ "period": "7d", "period_start": "2026-10-18T00:00:00+01:00",
+  "revenue_ngn": 85000.0, "expenses_ngn": 0.0, "profit_ngn": 85000.0, "total_owed_ngn": 30000.0,
+  "items_logged": 3,
+  "low_stock_items": [
+    { "id": 2, "name": "garri", "unit": "bag", "quantity_on_hand": 2.0, "unit_cost_ngn": 25000.0,
+      "reorder_level": 3.0, "reorder_quantity": 8.0, "low_stock": true,
+      "top_suggestion": { "supplier_id": 3, "supplier_name": "Mama Chioma Stores", "area": "Ketu",
+                          "distance_km": 1.3, "unit": "bag", "unit_price_ngn": 40000.0,
+                          "average_rating": 4.67, "review_count": 3, "quality_grade": "A",
+                          "quantity_available": 40.0, "can_fill": true,
+                          "reason": "Recommended: 1.3 km away, ₦40,000 per bag." } } ],
+  "recent_entries": [ "…the 10 newest entries, same shape as GET /entries…" ] }
+```
+
+- Revenue is sales plus credit sales. Payments received are not revenue. Profit is revenue minus expenses, and can be negative.
+- `total_owed_ngn` adds up only what customers owe; overpayments don't reduce it.
+- `top_suggestion` is the same first supplier as `GET /suggestions` for the item's reorder quantity. It is `null` when the item has no reorder quantity. Show it with the "Demo data" label (FR-C17).
+
+### `GET /suggestions?item=rice&quantity=10`
+
+```json
+{ "item": "rice", "quantity_needed": 10.0, "data_label": "Demo data",
+  "suggestions": [ { "supplier_id": 3, "supplier_name": "…", "area": "…", "distance_km": 1.3, "unit": "bag",
+                     "unit_price_ngn": 80000.0, "average_rating": 4.67, "review_count": 3,
+                     "quality_grade": "A", "quantity_available": 12.0, "can_fill": true,
+                     "reason": "…" } ] }
+```
+
+- Up to 3 suppliers, ranked in code. Show the "Demo data" label.
+- `quantity` defaults to the item's reorder quantity. If there is none, the response is `422 quantity_required`.
+- `reason` is wording only (from the model, or "Recommended: …" quoting real figures when the model is unavailable). Every figure comes from the database.
+
+### `POST /ask`
+
+```json
+{ "question": "Who owes me?" }
+```
+
+```json
+{ "intent": "who_owes", "answer": "Mama Ngozi ₦30,000. Total ₦30,000.",
+  "customers": [ { "name": "Mama Ngozi", "balance_ngn": 30000.0, "overdue": false } ],
+  "sales_ngn": null, "stock": null, "suggestions": null }
+```
+
+| `intent` | Example questions | Filled field |
+| --- | --- | --- |
+| `who_owes` | "Who owes me?", "who dey owe me" | `customers` (largest debt first) |
+| `customer_balance` | "How much Ngozi dey owe?" | `customers` (one) |
+| `today_total` | "How much I sell today?" | `sales_ngn` |
+| `stock_level` | "How many rice remain?" | `stock` (an inventory item) |
+| `restock_suggestion` | "Where I fit buy rice?" | `suggestions` (same as `GET /suggestions`) |
+| `unknown` | anything else | none; `answer` lists what can be asked |
+
+Show `answer`. Every figure in it comes from the database. For a restock question about an item with no reorder quantity, `answer` asks how many are needed.
+
+### Consent and the lender agent
+
+**1. The agent asks for access** (no auth, no business data returned):
+
+```json
+POST /access-requests
+{ "trader_phone": "08031234567", "agent_name": "QuickLoan agent", "purpose": "Check credit readiness",
+  "data_scopes": ["sales_total", "total_owed"] }
+```
+
+`202`: `{ "request_id": 1, "status": "pending", "claim_secret": "L0g5Yt…" }`.
+
+- `data_scopes` are any of `sales_total`, `active_days` and `total_owed`.
+- Missing purpose or scopes → `422`. Unknown phone → `404 trader_not_found`.
+
+**2. The app shows the prompt.** Poll `GET /access-requests?status=pending` (FR-C3: within 5 seconds):
+
+```json
+[ { "id": 1, "agent_name": "QuickLoan agent", "purpose": "Check credit readiness",
+    "scopes": ["sales_total", "total_owed"], "status": "pending", "requested_at": "…",
+    "decided_at": null, "expires_at": null,
+    "prompt": "QuickLoan agent wants to see your sales total, total owed for 30 days. Approve?",
+    "log": [ { "endpoint": "POST /access-requests", "result": "requested", "at": "…" } ] } ]
+```
+
+**3. The trader decides:** `POST /access-requests/{id}/approve` with `{ "approve": true }` or `{ "approve": false }`. It returns the request; deciding twice → `409 already_decided`.
+
+**4. The agent collects its token** with `GET /access-requests/{id}/status` and the header `X-Claim-Secret: <claim_secret>`:
+
+```json
+{ "request_id": 1, "status": "approved", "scopes": ["sales_total", "total_owed"],
+  "access_token": "BCgbZ0xg…", "token_type": "bearer", "expires_at": "2026-11-23T00:00:51Z" }
+```
+
+The token is returned exactly once. Later polls show `"token_already_collected": true`. A wrong secret → `404`.
+
+**5. The agent reads the summary:** `GET /agent/summary` with `Authorization: Bearer <access_token>`:
+
+```json
+{ "period_days": 30, "generated_at": "…", "scopes": ["sales_total", "total_owed"],
+  "sales_total_ngn": 85000.0, "total_owed_ngn": 30000.0 }
+```
+
+Only the approved scopes appear (`active_days` when granted). There are never customer names, raw text, entry IDs, phone or location.
+
+| Agent token | Status | `error.code` |
+| --- | --- | --- |
+| Missing | 401 | `missing_token` |
+| Unknown | 401 | `invalid_token` |
+| Expired | 401 | `expired` |
+| Revoked | 403 | `revoked` |
+
+**6. Revoke:** `DELETE /access/{id}` from the app. It takes effect at once. Every agent call and decision appears in the request's `log`.
+
+## Planned (not served yet)
+
+| Work | Task |
+| --- | --- |
+| Offline `DEMO_MODE` | 3.1 |
+| `POST /demo/reset`, `POST /demo/seed`, judges' dashboard | 3.3 |
+| CORS for the dashboard origin | 3.4 |
+| Session expiry, logout (PIN login pending decision D1) | 3.5 |
+| Real-time updates (pending decision D2) | 3.6 |
+
+## Screens (from the PRD)
 
 Bottom navigation: Home, Assistant, Inventory, Profile.
 
-- **Onboarding:** name, phone, business name, sector, market/area, and main items with optional opening stock. One short step at a time; validate before submit.
-- **Home:** profit/loss (revenue, expenses, profit) with today/7 days/30 days selector, total owed, newest logged items, and low-stock restock suggestions. Update within 3 seconds of a new entry. Item details show `raw_text`.
-- **Assistant:** type or record a voice note, send it to `/messages`, and show confirmation or a clarifying question. Show voice processing and clear backend/transcription failure states.
-- **Inventory:** items, quantity, unit, unit cost and low-stock highlight. Add/edit items, opening stock, restock or adjustment. “Where to restock” opens suggestions.
-- **Profile:** edit merchant details. Show connected agents with scope, expiry and Revoke. Poll pending access requests and show Approve/Reject.
-- **Restock suggestions:** up to 3 seeded suppliers with distance, unit price, rating, quality, quantity available and reason. Label all seeded supplier data “Demo data”.
-
-## Judges' Dashboard
-
-Show entries newest first with `raw_text`, customer balances and overdue flags, agent requests/scopes/revocation status/access log. Updates should appear within 3 seconds without manual refresh. Provide Reset and Seed controls.
-
-## Legacy Prototype Note
-
-The old `backend.py/` prototype has ArketData price comparisons, user-submitted market reviews and Open-Meteo weather routes. These are **not part of the current OJA client contract**. OJA uses the seeded synthetic supplier/offer/review dataset in `final-prd.md` Sections 4.6 and 6. Do not call prototype `/markets` routes from the Flutter client unless the PM updates and freezes the OJA PRD/API contract.
+- **Onboarding:** name, phone, business name, sector, market or area, and main items with optional opening stock.
+- **Home:** profit and loss card with a period selector, total owed, "Items logged" from `recent_entries`, low-stock items with their restock card.
+- **Assistant:** type or record a voice note. Show `message` from `POST /messages`, and route questions to `POST /ask`. Show a processing state for voice and a clear message on 503 or 502.
+- **Inventory:** the list from `GET /inventory` with the low-stock highlight; add items, edit details, add opening stock, restock or adjustment. "Where to restock" opens `GET /suggestions`.
+- **Profile:** edit the trader's details; connected agents from `GET /access-requests` with scope, expiry and a Revoke button (`DELETE /access/{id}`). Show the consent prompt when a pending request appears.
 
 ## Agent Action Log
 
-- 2026-10-23: Handoff aligned to OJA and `final-prd.md`; old prototype API is identified as a separate legacy prototype.
+
+
+- 2026-10-23: Handoff aligned to OJA and `final-prd.md`; old MerchantPal API is identified as a separate legacy prototype.
+- 2026-10-23: First OJA slices implemented in `server/app/` (SQLAlchemy ORM, Postgres): `onboarding` (traders, sessions, new `locations` table), `profile`, `customers`.
+  - Live for the client: `POST /onboarding` (201, returns `token` + `trader`; 409 `phone_taken`; 422 `unknown_location`), `GET`/`PATCH /profile`, `GET /customers` (names only, balances come with the ledger), `GET /health`.
+  - Auth: `Authorization: Bearer <token>`; missing/invalid token returns 401 (`missing_token` / `invalid_token`).
+  - Errors use `{ "error": { "code", "message" } }`, including 422 validation errors.
+  - Not yet: main items/opening stock at onboarding, location list endpoint, customer balances, Alembic migrations, login.
+- 2026-10-23: `customers` slice moved to clean-architecture wiring (no API change): router -> `CustomerOrchestrator` -> `CustomerRepository` -> Session, injected with FastAPI `Depends`.
+- 2026-10-23: `onboarding` and `profile` moved to the same clean-architecture wiring as `customers` (no API change). Added `onboarding/repositories/` (location, trader, session) and `shared/Infrastructure/db/base_repository.py` (commit/rollback/refresh).
+- 2026-10-23: Ledger, inventory (read-only) and home slices added; customers gains aliases and balances. Resolves review reds 4-7 (PRD accounting model, alias-first customer matching, per-trader pending clarification, single-transaction writes).
+  - New for the client: `GET /entries?period=today|7d|30d&type=&limit=&offset=`, `GET /inventory` (derived `quantity_on_hand`, `low_stock`), `GET /home?period=today|7d|30d` (revenue, expenses, profit = revenue - expenses, total owed, items logged, low-stock items).
+  - `GET /customers` now includes `balance_ngn` (derived; negative = overpaid).
+  - Money and quantities are JSON numbers. Periods start at Lagos midnight.
+  - `POST /messages` is not exposed yet; it needs the AI slice. The ledger workflow behind it (save / clarify / complete / correct) is built and tested.
+- 2026-10-23: Reds 8-15 resolved. `POST /messages` is live; `GET /suggestions` added.
+  - `POST /messages` text: JSON `{ "text", "client_message_id" }`. Voice: multipart fields `audio` (file) + `client_message_id`. Generate a new `client_message_id` per message and reuse it on retry: a retry returns the original reply unchanged.
+  - Response: `{ status: saved|corrected|clarify|fallback, message, entry?, flags[], transcript? }`. Show `message` in the chat; `transcript` is set for voice notes.
+  - Audio types: WAV, MP3, M4A, AAC, OGG, WebM, FLAC (max 15 MB). `application/octet-stream` is rejected with 415, so send the real content type.
+  - Errors: 503 `ai_unavailable` (retry later), 502 `transcription_failed` (resend or type), 415 `unsupported_audio`, 413 `audio_too_large`.
+  - `GET /suggestions?item=&quantity=`: up to 3 suppliers (distance_km, unit_price_ngn, average_rating, review_count, quality_grade, quantity_available, can_fill, reason) and `data_label: "Demo data"`. Quantity defaults to the item's reorder quantity; 422 `quantity_required` if there is none.
+  - Old `/markets`, `/markets/reviews` and `/transcribe` routes were not ported.
+- 2026-10-23: Alembic initialised (`alembic.ini` at repo root, scripts in `server/app/shared/Infrastructure/db/alembic`). Initial migration applied to the local Postgres; reference data seeded (8 locations, 6 demo suppliers). Run `alembic upgrade head` from the repo root, then `cd server && python -m app.demo.index`. Item-name matching is an open team question (`server/TODO.txt`).
+- 2026-10-23: Post-merge validation on `wade-latest-23-44` (rebase in progress). Fixed missing `Field` import in `server/app/shared/env.py` (app could not start). Our slices pass all checks on Postgres; the teammate's server code in the slices' `index.py` files, `shared/auth.py`, `shared/realtime.py` and `consent/` is present but not mounted. PRD gap review follows.
+- 2026-10-24: Wrote `server/IMPLEMENTATION_PLAN.md`: 25 tasks in 4 phases (clean-up, golden path, demo safety, quality) plus 6 open decisions. Correction to the earlier review: the Flutter client makes no API calls yet, so it is not bound to the teammate's API contract.
+- 2026-10-24: Phase 1 of `server/IMPLEMENTATION_PLAN.md` done. Removed the teammate's unmounted server code (business rules kept in `server/BUSINESS_REQUIREMENTS.txt`, source at `1a81088`). Restored `session.py` (no `create_all`). `env.py`: 30 required keys, no code defaults; `.env.example` regrouped. Rewrote this handoff and the README to the live contract. Added 52 repo tests (`server/tests/`, 58 in total, SQLite or `TEST_DATABASE_URL`). Fixed an unclosed multipart upload file in `POST /messages`. No API change.
+- 2026-10-24: Phase 2 of `server/IMPLEMENTATION_PLAN.md` done (tasks 2.1 to 2.7). New: `POST /inventory`, `PATCH /inventory/{id}`, `POST /inventory/{id}/stock`; main items at onboarding; "Do you mean X?" with yes/no and alias saving; context-aware questions; a different complete entry replaces a pending one; due dates from phrases ("Friday") computed in code; `overdue` and `aliases` on `/customers`; `stock_warning` on entries (oversell saves with no stock movement); Home `top_suggestion` and `recent_entries`; `POST /ask`; consent (`/access-requests`, approve, revoke, `/agent/summary`). Migrations `c3819b46ad50` (entries.stock_warning) and `5b14d59c5953` (consent tables). Business rules validated and decided are recorded in `server/BUSINESS_REQUIREMENTS.txt`. 114 tests pass on SQLite and PostgreSQL.
