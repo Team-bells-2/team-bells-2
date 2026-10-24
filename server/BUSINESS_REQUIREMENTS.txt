@@ -1,0 +1,568 @@
+OJA backend: business requirements recovered from the teammate's implementation
+==============================================================================
+
+Source: the parallel implementation removed in task 1.1 (IMPLEMENTATION_PLAN.md).
+It stays readable in git history:  git show 1a81088:server/app/<path>
+This file keeps its business logic so we can port it into our slices
+(models, repositories, services, orchestrator, router).
+
+HOW TO USE THIS FILE
+1. Before building a task, read the rules listed for it ("Task" column).
+2. Validate each rule against final-prd.md at that moment, and update its STATUS line:
+     VALIDATED  matches the PRD          -> use this approach in code
+     CONFLICT   contradicts the PRD or a decision already made -> do not use; note why
+     DECISION   not covered by the PRD   -> ask the team before using
+3. The "Pre-check" below is a first reading of the PRD, done when these rules were
+   extracted (2026-10-24). Confirm it when you implement; it is not a sign-off.
+
+Legend: Source = file:function at 1a81088. PRD = requirement IDs in final-prd.md.
+
+
+------------------------------------------------------------------------------
+A. LEDGER: MESSAGES, CLARIFICATIONS, CORRECTIONS   (source: ledger/index.py)
+------------------------------------------------------------------------------
+
+BR-L1  Correction detection in code
+  Rule:   A message is a correction of the last saved entry when it matches, in code:
+          "no, I mean", "no na", "no e be", "no be", "I mean", "correction", "actually",
+          "sorry, I mean / na / e be", "abeg change", "change am". It applies only when
+          no clarification is pending and a last entry exists.
+  Source: llm/index.py:CORRECTION_PATTERN, is_correction; ledger/index.py:_process_text
+  PRD:    FR-S6
+  Pre-check: VALIDATED as an offline / pre-filter signal. Our AI intent already returns
+          "correction"; use this pattern for DEMO_MODE and as a guard.
+  Task:   3.1
+  STATUS: pending
+
+BR-L2  A complete new entry abandons a pending question
+  Rule:   While a clarification is pending, a message of 3+ words that is a complete
+          entry on its own (has an item or a customer, nothing missing) deletes the
+          pending entry and is processed as new. A "yes" never does this.
+  Source: ledger/index.py:_is_fresh_entry
+  PRD:    FR-S5 says "the next message completes it"; it does not cover a trader who moves on.
+  Pre-check: DECISION (sensible extension; costs an extra extraction call per message).
+  Task:   2.3
+  STATUS: VALIDATED (2026-10-24, Phase 2). Decided: a different, complete entry (3+ words, not yes/no) replaces the pending one. Implemented in ledger/services.py:starts_over.
+
+BR-L3  Clarifying questions that use what is already known
+  Rule:   Missing amount with quantity and unit known:
+            sale / credit sale -> "How much did you collect for the 2.5 bags?"
+            expense            -> "How much did you pay for the 5 bags?"
+          Missing amount otherwise -> "How much was it?"
+          Missing customer for credit_sale / payment_received -> "Which customer is this for?"
+          Units are pluralised when quantity > 1 (not "kg").
+  Source: ledger/index.py:_missing_question
+  PRD:    FR-S5 acceptance uses exactly "How much did you collect for the 2.5 bags?"
+  Pre-check: VALIDATED. Replace our generic fallback questions in ledger/services.py.
+  Task:   2.3
+  STATUS: VALIDATED (2026-10-24, Phase 2). Implemented in ledger/services.py:missing_question (code wording is used for missing fields).
+
+BR-L4  Low confidence
+  Rule:   Confidence below 0.6 asks "I didn't fully understand. What did you sell or
+          spend, and for how much?". When the trader answers our own question and
+          supplies an amount, confidence is raised to at least 0.6.
+  Source: ledger/index.py:_missing_question, _process_text
+  PRD:    FR-S5 ("confidence is below a threshold")
+  Pre-check: CONFLICT with our design: ours uses CONFIDENCE_THRESHOLD from .env and asks
+          a confirmation of what was heard. Keep ours; the "answering our own question"
+          rule is worth reusing so a reply is not gated again.
+  Task:   2.3
+  STATUS: Threshold part CONFLICT (kept CONFIDENCE_THRESHOLD and our confirmation question). 'Answering our own question is not gated again' VALIDATED and implemented (2026-10-24, Phase 2).
+
+BR-L5  Customer resolution order
+  Rule:   1. Alias match anywhere in the message text (word boundary, case-insensitive).
+             - exactly one customer  -> link
+             - several               -> pick the one whose canonical name equals the
+                                         mention; otherwise ask "Do you mean A or B?"
+          2. Canonical name equals the mention -> link
+          3. Model matches the mention against the trader's customers and aliases:
+             - confidence >= 0.85 -> link, and save the mention as a new alias
+             - 0.5 to 0.85        -> ask "Do you mean <name>?" (only once the amount is known)
+          4. Otherwise, with a mention -> new customer.
+  Source: ledger/index.py:_resolve_customer, _alias_matches; llm/index.py:match_customer
+  PRD:    FR-S9 ("alias table first, then the LLM against the existing customer list";
+          "Unsure matches ask 'Do you mean Mama Ngozi?'")
+  Pre-check: VALIDATED. Thresholds 0.85 / 0.5 should come from .env.
+  Task:   2.3
+  STATUS: VALIDATED (2026-10-24, Phase 2). Implemented in LedgerOrchestrator._resolve_customer; thresholds in .env (CUSTOMER_MATCH_LINK_CONFIDENCE, CUSTOMER_MATCH_CONFIRM_CONFIDENCE).
+
+BR-L6  Yes / no answers to "Do you mean X?"
+  Rule:   Yes  (yes, yeah, yep, correct, exactly, "na she / he / am / her / him",
+               "e be so", ehen, ehn, ok) -> link X, save the mention as an alias,
+               save the entry (confidence at least 0.8).
+          No   (no, nope, "not her / him", "no be she / he / am") -> another single
+               alias match in the reply, else a new customer from the mention, else
+               ask "Which customer is this for?".
+          Anything else -> repeat the same question; nothing is saved.
+  Source: ledger/index.py:YES_PATTERN, NO_PATTERN, _process_text
+  PRD:    FR-S9
+  Pre-check: VALIDATED. Detection runs in code (not the model).
+  Task:   2.3
+  STATUS: VALIDATED (2026-10-24, Phase 2). Implemented in LedgerOrchestrator._answer_confirmation; a confirmed entry's confidence is raised to CONFIDENCE_THRESHOLD (not a fixed 0.8). Also applied to 'Just to confirm ...?': no -> nothing saved.
+
+BR-L7  Customer creation stores its own name as an alias; names are whitespace-normalised
+  Source: ledger/index.py:_create_customer, _add_alias
+  PRD:    FR-S9
+  Pre-check: VALIDATED (lets step 1 of BR-L5 find full names too).
+  Task:   2.3
+  STATUS: VALIDATED (2026-10-24, Phase 2). Implemented in LedgerOrchestrator._create_customer.
+
+BR-L8  Offline name guess
+  Rule:   With no model available, a distinctive word of a known name, ignoring titles
+          (mama, papa, mr, mrs, aunty, auntie, uncle, the, oga, madam, brother, sister,
+          iya, baba), gives a guess at confidence 0.6. It is always confirmed, never linked.
+  Source: llm/index.py:match_customer (fallback branch), _TITLES
+  PRD:    FR-S9, NFR-4
+  Pre-check: VALIDATED.
+  Task:   2.3, 3.1
+  STATUS: VALIDATED (2026-10-24, Phase 2) for customer matching (ai/services.py:guess_customer). DEMO_MODE use is task 3.1.
+
+BR-L9  Stock effect of an entry
+  Rule:   - At most one stock movement per entry, updated in place on correction.
+          - Units are normalised to singular for comparison ("bags" -> "bag"; "kg" unchanged).
+          - If the entry gives no unit, it takes the inventory item's unit.
+          - A unit that differs from the item's unit moves no stock.
+          - Sale larger than stock on hand: NO movement, flag "check_stock".
+          - Expense with item + quantity + unit and no inventory item: creates a new
+            inventory item (unit cost = amount / quantity) and restocks it.
+          - Sale of an item not in inventory: flag "not_in_inventory".
+          - The flag is stored on the entry (stock_warning) and returned with it.
+  Source: ledger/index.py:_sync_stock; llm/index.py:normalize_unit
+  PRD:    FR-S25, FR-S26
+  Pre-check: mixed.
+          VALIDATED: one movement per entry; flags; unit default from the item.
+          DECISION: unit normalisation and mismatch handling (TODO.txt item 1 / D6).
+          CONFLICT: "sale larger than stock moves no stock". PRD FR-S25 says the sale
+            "is still saved" and flagged; it does not say stock stays unchanged. Ours
+            moves stock (can go negative). Agree one rule.
+          CONFLICT: auto-creating an item from an expense. FR-S26 says "an expense with
+            no matching item ... changes no stock".
+          DECISION: storing the flag on the entry (useful for the dashboard, needs a
+            column and migration).
+  Task:   4.4 (units), 2.1 / 2.7 (flag storage)
+  STATUS: Partly done (2026-10-24, Phase 2). Implemented: one movement per entry; unit defaults to the item's; flag stored on entries.stock_warning (decided, migration c3819b46ad50); oversell saves with NO movement (decided). CONFLICT, not ported: auto-creating an item from an expense. Pending D6: unit normalisation and mismatch.
+
+BR-L10 Voice transcription failure writes nothing
+  Rule:   If transcription fails, nothing is saved and the message is not recorded as
+          processed, so the app can resend with the same client_message_id.
+  Source: ledger/index.py:process_message
+  PRD:    FR-S2, NFR-5
+  Pre-check: VALIDATED (ours already does this; it returns 502 instead of status "fallback").
+  Task:   3.8
+  STATUS: pending
+
+BR-L11 One structured log line per message
+  Rule:   trader id, status, input text, entry id, confidence, latency in ms.
+  Source: ledger/index.py:process_message
+  PRD:    NFR-10
+  Pre-check: VALIDATED. Add the client message ID and LLM call count; never log tokens.
+  Task:   3.7
+  STATUS: pending
+
+BR-L12 Confirmation line format
+  Rule:   "Recorded: credit sale, 2 bags rice, ₦60,000, Mama Ngozi, due Fri 30 Oct."
+          Correction: "Updated: ...". Units pluralised when quantity > 1.
+  Source: ledger/index.py:_confirmation
+  PRD:    FR-S7
+  Pre-check: VALIDATED as wording only (ours is built from saved fields too). Optional:
+          adopt the due-date format "Fri 30 Oct" and unit pluralisation.
+  Task:   2.5
+  STATUS: Due-date format 'due Fri 30 Oct' VALIDATED and adopted (2026-10-24, Phase 2). Unit pluralisation in the confirmation not adopted.
+
+BR-L13 Entries list paging with a total
+  Rule:   Response {items, limit, offset, total}; period filters period_start / period_end (dates).
+  Source: ledger/index.py:list_entries
+  PRD:    FR-S28 ("filtering by period and type, and paging")
+  Pre-check: DECISION. Ours returns a list with period=today|7d|30d. A total count helps
+          the app page; changing the shape changes the client contract.
+  Task:   1.4 (document), later
+  STATUS: pending
+
+
+------------------------------------------------------------------------------
+B. INTERPRETATION AND THE LLM WRAPPER   (source: shared/Infrastructure/llm/index.py)
+------------------------------------------------------------------------------
+
+BR-A1  Naira shorthand rewritten in the text before the model sees it
+  Pre-check: CONFLICT with the decision already made (the model quotes the amount phrase,
+          code parses it: ledger/services.py:parse_naira_amount). Do not port.
+  STATUS: CONFLICT (decided 2026-10-23)
+
+BR-A2  Due dates are computed in code, never by the model
+  Rule:   "tomorrow" / "tmrw" -> +1 day; "next tomorrow" -> +2; "next week" -> +7;
+          a weekday name -> its next occurrence (the same weekday as today -> +7).
+          Only for credit sales. Relative to the trader's current date.
+  Source: llm/index.py:_due_date, extract_entry
+  PRD:    FR-S12 ("Relative dates such as 'Friday' resolve to a concrete date using the
+          trader's current date")
+  Pre-check: VALIDATED. Use Lagos date (app.shared.periods.LAGOS), not UTC.
+  Task:   2.5
+  STATUS: VALIDATED (2026-10-24, Phase 2). Implemented as ledger/services.py:resolve_due_date; the model quotes due_text (decided), credit sales only, Lagos date.
+
+BR-A3  Rule-based offline extractor
+  Rule:   Used when DEMO_MODE is on or no provider is reachable.
+          Type keywords:
+            credit_sale      "on credit", "owe", "go pay", "put am for account", "will pay",
+                             "credit", "pay later", "pay me later", "account"
+            payment_received "paid me", "don pay", "pay me", "received payment",
+                             "pay back", "paid"  (only when not a credit phrase)
+            expense          "i spend", "i spent", "expense", "transport", "i buy",
+                             "i bought", "go buy", "went buy", "i don buy", "restock",
+                             "i purchase", "i purchased"
+            otherwise sale
+          Quantity: number or number word + unit, with "and (a) half" adding 0.5.
+            Units: bag, bottle, measure, derica, painter, piece, tin, kg, litre, carton,
+            basket, packet, pack, crate, sachet, keg, bundle, dozen, tuber, paint, roll.
+          Amount: last number >= 50 outside the quantity phrase.
+          Items: palm oil, vegetable oil, groundnut oil, tomatoes, garri, beans, rice,
+            yam, oil; else the word after "<qty> <unit> (of)". Customer nicknames are
+            removed from the text first, so "the rice woman" is not the item.
+          Customer: a known name or alias; else "<name> don pay / paid me / pay me",
+            "on <name>'s account", or a titled name ("Mama X", "Mr X", "Iya X", ...).
+            Several known customers mentioned -> leave empty so the trader is asked.
+          Confidence: 0.85 when complete, 0.45 otherwise.
+          With a pending entry: fills the missing amount and/or customer from the reply.
+  Source: llm/index.py:_demo_extract, _quantity, _amount, _match_known_customer
+  PRD:    NFR-4 (DEMO_MODE), golden path offline
+  Pre-check: VALIDATED for DEMO_MODE. Port it to produce our Interpretation shape, with
+          the amount as amount_text so parse_naira_amount still decides the figure.
+  Task:   3.1
+  STATUS: pending
+
+BR-A4  Rule-based offline correction parser
+  Rule:   "No be 2 bags, na 4 bags" -> the last value; "55k, not 60k" -> the first value;
+          a bare "I mean 4" is a quantity when below 50. Only changed fields are returned.
+  Source: llm/index.py:_demo_correction
+  PRD:    FR-S6, NFR-4
+  Pre-check: VALIDATED for DEMO_MODE.
+  Task:   3.1
+  STATUS: pending
+
+BR-A5  Silent fallback to rules when the provider errors
+  Rule:   On any provider error the rule-based extractor is used instead of failing.
+  Source: llm/index.py:extract_entry, extract_correction
+  PRD:    NFR-3 ("If the LLM or speech-to-text fails, the app says so") vs NFR-4
+  Pre-check: DECISION. Ours returns 503 ai_unavailable. Options: fall back only when
+          DEMO_MODE is on (PRD-safe), or always fall back and mark the reply as a guess.
+  Task:   3.1
+  STATUS: pending
+
+BR-A6  Rate-limit retry
+  Rule:   On HTTP 429, wait Retry-After (max 3 s, default 1.5 s) and retry once.
+  Source: llm/index.py:_chat_json
+  PRD:    NFR-8
+  Pre-check: VALIDATED.
+  Task:   3.2
+  STATUS: pending
+
+BR-A7  Model picks from lists, code checks the pick
+  Rule:   For customer matching and intent routing, a name or item the model returns is
+          discarded unless it is exactly one of the names supplied in the context.
+  Source: llm/index.py:match_customer, route_intent
+  PRD:    FR-S9, FR-S11, design rule
+  Pre-check: VALIDATED.
+  Task:   2.3, 2.4
+  STATUS: VALIDATED (2026-10-24, Phase 2). Implemented in AIOrchestrator.match_customer and route_intent.
+
+BR-A8  Prompts (wording to reuse)
+  Rule:   MATCH_PROMPT returns {"customer": <exact name or null>, "confidence": 0..1}.
+          INTENT_PROMPT returns {"intent", "customer", "item"} with the whitelist.
+          REASON_PROMPT: one sentence under 20 words, "Do not add or change any number."
+  Source: llm/index.py (constants at the top)
+  PRD:    FR-S9, FR-S11, FR-S31
+  Pre-check: VALIDATED as wording.
+  Task:   2.3, 2.4
+  STATUS: VALIDATED (2026-10-24, Phase 2). MATCH_PROMPT and INTENT_PROMPT added to ai/services.py.
+
+
+------------------------------------------------------------------------------
+C. ASK   (source: ask/index.py)
+------------------------------------------------------------------------------
+
+BR-Q1  Keyword routing before the model
+  Rule:   (on the lower-cased question, punctuation trimmed)
+          restock_suggestion: "where (i|i fit|can i|to|should i) (fit) (buy|get|restock)",
+                              "restock", "who dey sell"; item from the trader's items,
+                              else rice / beans / garri / oil in the text
+          customer_balance:   "how much / wetin ... owe / dey owe" + a known customer
+          who_owes:           "who owes / dey owe / de owe / still owe", "who never pay",
+                              "my debtors"
+          today_total:        "(sell|sold|sales|make) ... today", "today's sales"
+          stock_level:        "stock / remain / left / how many" + a known item
+          A customer matches by full name or by the last word of the name.
+          No keyword match -> the model picks the intent (BR-A7) -> else "unknown".
+  Source: ask/index.py:_keyword_intent
+  PRD:    FR-S11
+  Pre-check: VALIDATED.
+  Task:   2.4
+  STATUS: VALIDATED (2026-10-24, Phase 2). Implemented in ask/services.py:keyword_intent.
+
+BR-Q2  Answers
+  Rule:   who_owes: owing customers sorted by amount (largest first), "(overdue)" marker,
+            "Total ₦X."; "Nobody owes you right now." when none.
+          customer_balance: "<name> owes you ₦X." / "<name> doesn't owe you anything."
+          today_total: "Today's recorded sales are ₦X." (sale + credit_sale)
+          stock_level: "You have N <unit> of <item> left."
+          restock_suggestion: "Demo data. 1. <supplier> (<area>), ₦price per unit: <reason> ..."
+            with the same suppliers and order as GET /suggestions;
+            "I don't have supplier data for <item> yet." when none.
+          unknown: "I can tell you who owes you, one customer's balance, today's sales,
+            your stock, or where to restock."
+  Source: ask/index.py:ask
+  PRD:    FR-S11, FR-S32
+  Pre-check: VALIDATED. today_total must use Lagos midnight (the source used UTC).
+  Task:   2.4
+  STATUS: VALIDATED (2026-10-24, Phase 2). Implemented in ask/services.py; today uses Lagos midnight.
+
+
+------------------------------------------------------------------------------
+D. CUSTOMERS   (source: customers/index.py)
+------------------------------------------------------------------------------
+
+BR-C1  Overdue
+  Rule:   A customer is overdue when their balance is above 0 and any of their credit
+          sales has a due date in the past.
+  Source: customers/index.py:customer_balances
+  PRD:    FR-S12
+  Pre-check: VALIDATED. Compute in one query, not per customer (the source loads all entries).
+  Task:   2.5
+  STATUS: VALIDATED (2026-10-24, Phase 2). Implemented with one query (EntryRepository.customers_with_past_due_credit).
+
+BR-C2  Customer list shape
+  Rule:   Each customer: id, name, aliases (excluding the canonical name),
+          amount_owed_ngn (never below 0), overdue.
+  Source: customers/index.py:list_customers
+  PRD:    FR-C7, FR-C4
+  Pre-check: DECISION. Ours returns balance_ngn, which can be negative (overpaid). Adding
+          aliases and overdue is VALIDATED; clamping at 0 hides overpayment.
+  Task:   2.3, 2.5
+  STATUS: aliases + overdue VALIDATED and added (2026-10-24, Phase 2). Clamping at 0: CONFLICT (decided: balance stays signed).
+
+
+------------------------------------------------------------------------------
+E. INVENTORY   (source: inventory/index.py, inventory/schemas.py)
+------------------------------------------------------------------------------
+
+BR-I1  Add item: name unique per trader (case-insensitive) -> 409 "item_exists".
+       Fields: name, unit, unit_cost_ngn (>= 0), reorder_level, reorder_quantity (>= 0).
+  PRD: FR-S23   Pre-check: VALIDATED   Task: 2.1   STATUS: VALIDATED (2026-10-24, Phase 2). Implemented (POST /inventory).
+
+BR-I2  Edit item: name, unit, unit cost, reorder level and quantity only; never quantity
+       on hand. Unknown or another trader's item -> 404.
+  PRD: FR-S23   Pre-check: VALIDATED   Task: 2.1   STATUS: VALIDATED (2026-10-24, Phase 2). Implemented (PATCH /inventory/{id}, extra fields rejected).
+
+BR-I3  Stock movement rules for POST /inventory/{id}/stock
+       - opening and restock must be positive
+       - adjustment may be positive or negative
+       - the result may not take stock below zero -> 409 "negative_stock"
+       - (source also allowed a manual "sale" movement, negative only)
+  PRD: FR-S24 (opening, restock, adjustment)
+  Pre-check: VALIDATED, except the manual "sale" reason: CONFLICT (sales come from the
+       ledger only). Note: the no-negative rule applies to manual movements; ledger sales
+       follow BR-L9.
+  Task: 2.1   STATUS: VALIDATED (2026-10-24, Phase 2). Implemented (POST /inventory/{id}/stock); manual 'sale' reason rejected (CONFLICT).
+
+BR-I4  Low stock: quantity on hand <= reorder level.
+  PRD: FR-S27, FR-S32   Pre-check: VALIDATED (ours matches)   STATUS: VALIDATED
+
+
+------------------------------------------------------------------------------
+F. ONBOARDING, SESSIONS, PROFILE   (source: onboarding/index.py, schemas.py, shared/auth.py)
+------------------------------------------------------------------------------
+
+BR-O1  Main items at onboarding
+  Rule:   items[] (max 40): name, unit, unit_cost_ngn, opening_quantity (optional, >= 0),
+          reorder_level, reorder_quantity. Each creates an inventory item; an opening
+          quantity creates an "opening" stock movement. All in the same transaction as
+          the trader and session.
+  PRD:    FR-S21
+  Pre-check: VALIDATED.
+  Task:   2.2
+  STATUS: VALIDATED (2026-10-24, Phase 2). Implemented (OnboardingRequest.items; one transaction).
+
+BR-O2  Client-supplied latitude / longitude at onboarding and in profile
+  Pre-check: CONFLICT with the decision already made (coordinates come from the
+          locations table). Do not port.
+  STATUS: CONFLICT (decided 2026-10-23)
+
+BR-O3  Phone + PIN accounts
+  Rule:   PIN of 4 to 6 digits, stored as scrypt (n=2^14, r=8, p=1, 16-byte salt).
+          Login: wrong phone and wrong PIN give the same error and take the same time
+          (a dummy hash is checked for unknown phones). 5 wrong PINs lock the account
+          for 5 minutes (429 "account_locked"). Logout revokes only this device's
+          session. Change PIN requires the current PIN. Sign-up also at /auth/signup.
+  PRD:    not in the PRD; D7 says "No OTP or password".
+  Pre-check: DECISION (D1 in IMPLEMENTATION_PLAN.md).
+  Task:   3.5
+  STATUS: pending
+
+BR-O4  Session expiry
+  Rule:   Each session expires after SESSION_TOKEN_TTL_DAYS; expired or revoked -> 401.
+  PRD:    NFR-7, FR-C5
+  Pre-check: VALIDATED.
+  Task:   3.5
+  STATUS: pending
+
+
+------------------------------------------------------------------------------
+G. HOME   (source: home/index.py)
+------------------------------------------------------------------------------
+
+BR-H1  Each low-stock item carries its top restock suggestion, built with the template
+       reason (no model call on Home).
+  PRD: FR-S32, FR-C17   Pre-check: VALIDATED   Task: 2.7   STATUS: VALIDATED (2026-10-24, Phase 2). Implemented (Home low_stock_items[].top_suggestion, template reason).
+
+BR-H2  Home includes the 10 most recent entries.
+  PRD: FR-C13   Pre-check: VALIDATED   Task: 2.7   STATUS: VALIDATED (2026-10-24, Phase 2). Implemented (Home recent_entries).
+
+BR-H3  Periods: "7d" = the last 7 x 24 hours, in UTC.
+  Pre-check: CONFLICT with the decision already made (Lagos midnight, today plus the
+       6 days before). Do not port.   STATUS: CONFLICT (decided 2026-10-23)
+
+
+------------------------------------------------------------------------------
+H. SUGGESTIONS   (source: suggestions/index.py, config.py, seed.py)
+------------------------------------------------------------------------------
+
+BR-S1  Default quantity when none is given: the item's reorder quantity, else 1.
+  PRD:  FR-S30 ("defaults to the item's reorder quantity"; silent when there is none)
+  Pre-check: DECISION. Ours returns 422 "quantity_required".
+  Task: 2.4 (the ask restock answer needs a default)   STATUS: CONFLICT (2026-10-24, Phase 2). Decided: no default of 1; GET /suggestions keeps 422, /ask asks 'How many ...?', Home shows no suggestion.
+
+BR-S2  Template reason quoting the facts
+  Rule:   "Recommended: <top two factors>", phrased as "in your market" (< 0.5 km) /
+          "N km away", "rated R by N traders", "grade A quality", "₦price per unit",
+          "has N units in stock".
+  PRD:    FR-S31 (figures read from the database)
+  Pre-check: VALIDATED. Better than ours ("Good price and close to you"); figures come
+          from DB facts, not the model.
+  Task:   2.7   STATUS: VALIDATED (2026-10-24, Phase 2). Implemented in suggestions/services.py:template_reason.
+
+BR-S3  Weights and scores: distance 0.25, rating 0.20, quality 0.20, cost 0.25,
+       quantity 0.10; quality A 1.0, B 0.6, C 0.2; distance halves at 5 km.
+  Pre-check: DECISION (values only; ours live in .env with different defaults).
+  STATUS: pending
+
+BR-S4  Trader position fallback: no coordinates -> match the location name to a market list.
+  Pre-check: CONFLICT / not needed (our traders always get coordinates from locations).
+  STATUS: CONFLICT (decided 2026-10-23)
+
+BR-S5  Seed data: 8 suppliers at named Lagos markets (Mile 12, Oyingbo, Daleko, Mushin,
+       Ikotun, Oshodi, Ketu, Agege) with 2-3 offers each and 3 reviews each.
+  PRD:  FR-S29   Pre-check: DECISION (ours already seeds 6 suppliers x 4 items, which
+       meets FR-S29; their market list could extend our locations seed).
+  STATUS: pending
+
+
+------------------------------------------------------------------------------
+I. CONSENT AND THE LENDER AGENT   (source: consent/index.py, consent/models.py)
+------------------------------------------------------------------------------
+
+BR-K1  Agent creates a request (open endpoint, returns no business data)
+  Rule:   POST /access-requests {trader_phone, agent_name, purpose (3-500 chars),
+          data_scopes: one or more of sales_total, active_days, total_owed (duplicates
+          removed)}. Unknown phone -> 404. Returns 202 {request_id, status: "pending",
+          claim_secret}. Only a hash of the claim secret is stored. Logged as "requested".
+  PRD:    FR-S13 (422 without purpose or scopes). The PRD does not say how the agent
+          names the trader; the phone number is a reasonable key.
+  Pre-check: VALIDATED.
+  Task:   2.6   STATUS: VALIDATED (2026-10-24, Phase 2). Decided: phone + claim secret. Implemented in consent/.
+
+BR-K2  Agent collects its token once
+  Rule:   GET /access-requests/{id}/status with header X-Claim-Secret. Wrong secret or
+          id -> 404. When approved, the first call creates the token and returns it with
+          its expiry; later calls return token_already_collected. Logged "token_issued".
+  PRD:    FR-S14 (scoped token with expiry; random; stored hashed)
+  Pre-check: VALIDATED (the token is issued at collection rather than at approval,
+          which keeps the plain token out of the trader's app).
+  Task:   2.6   STATUS: VALIDATED (2026-10-24, Phase 2). Implemented in consent/.
+
+BR-K3  Trader decides
+  Rule:   POST /access-requests/{id}/approve {approve: true|false}. Only a pending request
+          of this trader (else 404); already decided -> 409 "already_decided". Approve sets
+          expires_at = now + ACCESS_TOKEN_TTL_MINUTES. Logged with the decision.
+  PRD:    FR-S14   Pre-check: VALIDATED   Task: 2.6   STATUS: VALIDATED (2026-10-24, Phase 2). Implemented in consent/.
+
+BR-K4  Trader's list for the consent prompt
+  Rule:   GET /access-requests?status= returns each request with agent, purpose, scopes,
+          status, timestamps, a ready "prompt" ("QuickLoan agent wants to see your sales
+          total, total owed for 30 days. Approve?") and its last 20 log rows.
+  PRD:    FR-S13, FR-C3, FR-C16   Pre-check: VALIDATED   Task: 2.6   STATUS: VALIDATED (2026-10-24, Phase 2). Implemented; the prompt's duration follows ACCESS_TOKEN_TTL_MINUTES.
+
+BR-K5  Revoke
+  Rule:   DELETE /access/{id}: request -> revoked, its token gets revoked_at. Logged.
+  PRD:    FR-S17   Pre-check: VALIDATED   Task: 2.6   STATUS: VALIDATED (2026-10-24, Phase 2). Implemented in consent/.
+
+BR-K6  Totals-only summary
+  Rule:   GET /agent/summary, Bearer access token. Window: last 30 days.
+          sales_total_ngn = sum of sale + credit_sale; active_days = distinct days with an
+          entry; total_owed_ngn = sum of positive customer balances. Only the scoped
+          fields are present. Never names, raw text, entry IDs, phone or location.
+  PRD:    FR-S15, NFR-6   Pre-check: VALIDATED (use Lagos dates for active days)
+  Task:   2.6   STATUS: VALIDATED (2026-10-24, Phase 2). Implemented; active days counted on Lagos dates.
+
+BR-K7  Status codes and logging for agent calls
+  Rule:   no token -> 401 missing_token; unknown token -> 401 invalid_token;
+          revoked -> 403 revoked; expired -> 401 expired; success -> logged "ok".
+          Every call writes an access-log row (request id empty when the token is unknown).
+  PRD:    FR-S16, FR-S17   Pre-check: VALIDATED   Task: 2.6   STATUS: VALIDATED (2026-10-24, Phase 2). Implemented; failed calls are logged before the error is returned.
+
+BR-K8  Data model additions beyond schema.sql
+  Rule:   access_requests gains claim_hash and expires_at; access_tokens has one token per
+          request (unique request_id).
+  Pre-check: VALIDATED as an extension (needed by BR-K2 / BR-K3).
+  Task:   2.6   STATUS: VALIDATED (2026-10-24, Phase 2). Implemented (migration 5b14d59c5953).
+
+
+------------------------------------------------------------------------------
+J. DEMO CONTROLS AND DASHBOARD   (source: demo/index.py, demo/dashboard.html)
+------------------------------------------------------------------------------
+
+BR-D1  Reset and seed, behind a switch
+  Rule:   Both return 403 "demo_controls_disabled" unless DEMO_CONTROLS_ENABLED=true.
+          POST /demo/reset deletes all trader data (children before parents) and keeps
+            the supplier reference data.
+          POST /demo/seed (safe to run twice): demo trader "Tolu Adeyemi",
+            "Tolu Foodstuff Store", foodstuff, Mushin; items (name, unit, unit cost,
+            opening, reorder level, reorder qty):
+              rice  bag 58000 10 3 10 | beans bag 68000 6 2 5
+              garri bag 25000  2 3  8 | oil   keg 36000 5 2 4
+            customers with aliases:
+              Mama Ngozi: Ngozi, the rice woman | Mr Bayo: Bayo, Oga Bayo
+              Aunty Funke: Funke | Iya Sade: Sade, the pepper seller
+            returns a session token for the demo trader.
+  PRD:    FR-C10, D4
+  Pre-check: VALIDATED (garri starts below its reorder level, which shows the restock
+          card in step 7). The demo location must exist in our locations table.
+  Task:   3.3   STATUS: pending
+
+BR-D2  Judges' dashboard page
+  Rule:   GET /dashboard serves one HTML page with: trader console, ledger entries with
+          transcript, customers and debts, agent access (requests, scopes, log), and a
+          lender-agent panel ("QuickLoan") that requests access and shows the summary.
+  PRD:    FR-C6 to FR-C9, FR-C11
+  Pre-check: VALIDATED. Its live updates used the WebSocket (see BR-R1 / D2).
+  Task:   3.3   STATUS: pending
+
+
+------------------------------------------------------------------------------
+K. REAL-TIME   (source: shared/realtime.py)
+------------------------------------------------------------------------------
+
+BR-R1  WebSocket push
+  Rule:   /ws?token=<session token>; invalid token closes with code 4401. Events, sent
+          after commit: entry_saved, entry_updated, inventory_changed, profile_updated,
+          access_requested, access_decided, access_revoked, access_log. "ping" -> "pong".
+          Single process only (one uvicorn worker).
+  PRD:    FR-C6, FR-C13 (updates within 3 seconds; PRD suggests polling or server-sent events)
+  Pre-check: DECISION (D2).
+  Task:   3.6   STATUS: pending
+
+
+------------------------------------------------------------------------------
+L. VOICE UPLOAD FORMAT   (source: ledger/schemas.py)
+------------------------------------------------------------------------------
+
+BR-V1  Voice as base64 inside the JSON message (audio_base64, audio_filename).
+  Pre-check: CONFLICT with the decision already made (multipart upload). Do not port.
+  STATUS: CONFLICT (decided 2026-10-23)
