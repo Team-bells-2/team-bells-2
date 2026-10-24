@@ -1,4 +1,4 @@
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
@@ -24,3 +24,9 @@ def get_db() -> Iterator[Session]:
         yield db
     finally:
         db.close()
+
+
+def get_session_factory() -> Callable[[], Session]:
+    """FastAPI dependency for long-lived endpoints (the WebSocket): they open a short session only
+    when they need the database, instead of holding one from get_db for the whole connection."""
+    return SessionLocal
