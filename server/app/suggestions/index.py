@@ -39,13 +39,13 @@ def _trader_position(trader: Trader) -> tuple[float, float] | None:
 def _template_reason(factors: dict[str, float], facts: dict) -> str:
     top = sorted(factors, key=lambda name: (-factors[name], name))[:2]
     phrases = {
-        "distance": "nearby" if facts["distance_km"] is None else "in your market" if facts["distance_km"] < 0.5 else f"{facts['distance_km']} km away",
-        "rating": f"rated {facts['average_rating']} by {facts['review_count']} traders",
-        "quality": f"grade {facts['quality_grade']} quality",
-        "cost": f"₦{facts['unit_price_ngn']:,} per {facts['unit']}",
-        "quantity": f"has {facts['quantity_available']:g} {facts['unit']}s in stock",
+        "distance": "e near you" if facts["distance_km"] is None else "e dey your market" if facts["distance_km"] < 0.5 else f"e dey {facts['distance_km']} km away",
+        "rating": f"{facts['review_count']} traders rate am {facts['average_rating']}",
+        "quality": f"e get grade {facts['quality_grade']} quality",
+        "cost": f"na ₦{facts['unit_price_ngn']:,} per {facts['unit']}",
+        "quantity": f"e get {facts['quantity_available']:g} {facts['unit']}s for stock",
     }
-    return f"Recommended: {phrases[top[0]]}, {phrases[top[1]]}."
+    return f"Good choice: {phrases[top[0]]}, {phrases[top[1]]}."
 
 
 def rank_suppliers(db: Session, trader: Trader, item: str, quantity: float | None = None, phrase: bool = True) -> dict:
