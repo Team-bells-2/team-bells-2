@@ -6,6 +6,7 @@ from decimal import Decimal
 from sqlalchemy import func, select
 
 from app.ledger.models import Entry, ProcessedMessage
+from app.ledger.services import RULES_NOTE
 from app.shared.Infrastructure.llm.client import LLMError
 from tests.support import ApiTestCase, interpretation
 
@@ -73,13 +74,25 @@ class MessagesApiTest(ApiTestCase):
         body = self.send(self.headers, "no be 45k", "m2", {"intent": "correction", "confidence": 0.9, "amount_text": "45k"}).json()
         self.assertEqual((body["status"], body["entry"]["id"], body["entry"]["amount_ngn"]), ("corrected", saved["entry"]["id"], 45000))
 
-    def test_provider_down_is_503_and_the_same_id_works_later(self) -> None:
-        response = self.send(self.headers, "sold rice 3k", "m1", LLMError("down"))
+    def test_provider_down_and_rules_cannot_read_it_is_503_and_the_same_id_works_later(self) -> None:
+        response = self.send(self.headers, "how far", "m1", LLMError("down"))
         self.assertEqual((response.status_code, response.json()["error"]["code"]), (503, "ai_unavailable"))
         with self.Session() as db:
             self.assertIsNone(db.get(ProcessedMessage, (self.trader_id, "m1")))
-        body = self.send(self.headers, "sold rice 3k", "m1", interpretation(type="sale", amount_text="3k")).json()
-        self.assertEqual(body["status"], "saved")
+        body = self.send(self.headers, "how far", "m1", {"intent": "unknown", "confidence": 0.9}).json()
+        self.assertEqual(body["status"], "fallback")
+
+    def test_provider_down_rules_read_the_message_and_the_reply_says_so(self) -> None:
+        body = self.send(self.headers, "sold rice 3k", "m1", LLMError("down")).json()
+        self.assertEqual((body["status"], body["entry"]["amount_ngn"]), ("saved", 3000))
+        self.assertTrue(body["message"].endswith(RULES_NOTE), body["message"])
+        self.assertEqual(self.send(self.headers, "sold rice 3k", "m1").json(), body)  # a retry replays it
+
+    def test_provider_down_sale_still_moves_stock(self) -> None:
+        rice = self.add_stock(self.trader_id, "rice", "10")
+        body = self.send(self.headers, "I sell 2 bags rice 120k", "m1", LLMError("down")).json()
+        self.assertEqual((body["status"], body["flags"]), ("saved", []))
+        self.assertEqual(self.on_hand(rice), Decimal("8"))
 
     def test_missing_client_message_id_is_422(self) -> None:
         response = self.client.post("/messages", headers=self.headers, json={"text": "hi"})

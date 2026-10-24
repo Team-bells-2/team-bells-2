@@ -12,6 +12,8 @@ from app.shared.naira import parse_naira_amount  # noqa: F401  (FR-S4 parser; re
 
 NOT_UNDERSTOOD_MESSAGE = "Sorry, I didn't catch that. Can you say it again?"
 FALLBACK_MESSAGE = "I can record sales, credit sales, payments and expenses. Tell me what you sold, collected or spent."
+# Added to the reply when the assistant was down and the built-in rules read the message (NFR-3).
+RULES_NOTE = "(The assistant is busy, so I read this with basic rules. Check it is right.)"
 NOT_SAVED_MESSAGE = "Okay, I didn't save it. Tell me again what happened."
 WHICH_CUSTOMER_QUESTION = "Which customer is this for?"
 

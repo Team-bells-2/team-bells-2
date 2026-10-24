@@ -164,13 +164,20 @@ class LedgerOrchestrator:
                 trader_id, text, confirmed_pending
             )
         else:
-            interpretation = self._interpret(trader_id, text)
-            work = lambda: self._route(trader_id, text, interpretation)
+            interpretation, read_by_rules = self._interpret(trader_id, text)
+            work = lambda: self._with_rules_note(self._route(trader_id, text, interpretation), read_by_rules)
         return self._process_once(
             trader_id,
             client_message_id,
             lambda: work().model_copy(update={"transcript": transcript}),
         )
+
+    @staticmethod
+    def _with_rules_note(result: LedgerResult, read_by_rules: bool) -> LedgerResult:
+        """Tell the trader when the built-in rules read the message because the assistant was down (NFR-3)."""
+        if not read_by_rules:
+            return result
+        return result.model_copy(update={"message": f"{result.message} {services.RULES_NOTE}"})
 
     def _replay(self, trader_id: int, client_message_id: str) -> LedgerResult | None:
         processed = self.processed_message_repository.get_processed(
@@ -214,14 +221,16 @@ class LedgerOrchestrator:
                 self.events.publish(trader_id, "inventory_changed", inventory_services.to_item_out(item, quantity))
         self._stock_touched = set()
 
-    def _interpret(self, trader_id: int, text: str) -> Interpretation | None:
-        """None means the model's output was invalid twice (FR-S3); the trader is asked to repeat."""
+    def _interpret(self, trader_id: int, text: str) -> tuple[Interpretation | None, bool]:
+        """The reading and whether the built-in rules made it (the provider was down). A None reading means
+        the model's output was invalid twice (FR-S3); the trader is asked to repeat. A provider failure on a
+        message the rules cannot read either is a 503."""
         try:
-            return self.ai_orchestrator.interpret_message(
+            return self.ai_orchestrator.interpret_or_rules(
                 text, self._interpretation_context(trader_id)
             )
         except InterpretationFailed:
-            return None
+            return None, False
         except LLMError as error:
             raise AppError(
                 503,

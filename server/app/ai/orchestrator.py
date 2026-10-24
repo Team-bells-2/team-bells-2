@@ -1,3 +1,4 @@
+import logging
 from typing import Any
 
 from pydantic import ValidationError
@@ -6,6 +7,7 @@ from app.ai import services
 from app.ai.schemas import CustomerMatch, IntentChoice, Interpretation, ItemMatch, PhrasedReasons, ReasonFacts
 from app.shared.Infrastructure.llm.client import LLMClient, LLMError
 
+logger = logging.getLogger(__name__)
 
 class InterpretationFailed(Exception):
     """The model's output failed validation twice (FR-S3)."""
@@ -14,7 +16,9 @@ class InterpretationFailed(Exception):
 class AIOrchestrator:
     """With demo_mode on, no provider is ever called (NFR-4): messages are read by rules, customer
     matches are offline guesses (always confirmed), /ask uses keyword routing only, and reasons use
-    the template. With it off, a provider failure is reported, never silently replaced (NFR-3)."""
+    the template. With it off, a provider failure is reported, never silently replaced (NFR-3): a message
+    the rules can still read is saved with a note saying so (interpret_or_rules), otherwise the failure
+    reaches the caller."""
 
     def __init__(self, llm_client: LLMClient, demo_mode: bool):
         self.llm_client = llm_client
@@ -35,6 +39,19 @@ class AIOrchestrator:
             except ValidationError as error:
                 previous_error = f"Invalid output: {error.errors()[0].get('msg', 'schema mismatch')}"
         raise InterpretationFailed(previous_error or "Invalid output.")
+
+    def interpret_or_rules(self, text: str, context: dict[str, Any]) -> tuple[Interpretation, bool]:
+        """interpret_message, but when the provider fails (quota, overload, timeout) the built-in rules
+        that DEMO_MODE uses read the message instead. The second value is True when the rules were used,
+        so the reply can say so (NFR-3). If the rules cannot read it either, the LLMError propagates."""
+        try:
+            return self.interpret_message(text, context), False
+        except LLMError as error:
+            reading = Interpretation.model_validate(services.demo_interpret(text, context))
+            if reading.intent == "unknown":
+                raise
+            logger.warning("LLM unavailable (%s); message read by the built-in rules instead.", error)
+            return reading, True
 
     def match_customer(self, mention: str, text: str, customers: list[dict[str, Any]]) -> tuple[str | None, float]:
         """Which listed customer the mention means, with a confidence (FR-S9). A name not in the list is

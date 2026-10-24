@@ -52,7 +52,7 @@ class ChatHistoryApiTest(ApiTestCase):
         self.assertEqual(len(self.history()["messages"]), 2)
 
     def test_failed_message_is_not_stored(self) -> None:
-        response = self.send(self.headers, "sold rice 10k", "m1", LLMError("down"))
+        response = self.send(self.headers, "how far", "m1", LLMError("down"))  # the rules can't read it either
         self.assertEqual(response.status_code, 503, response.text)
         self.assertEqual(self.history()["messages"], [])
 
