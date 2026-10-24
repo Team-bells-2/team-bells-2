@@ -19,6 +19,8 @@ The response examples below were captured from the running app.
 | --- | --- | --- |
 | `GET /health` | none | Liveness |
 | `POST /onboarding` | none | Create a trader (and their main items), get a session token |
+| `POST /auth/login` | none | Phone + PIN; returns a new session token |
+| `POST /auth/logout`, `POST /auth/change-pin` | token | End this device's session; set or change the PIN |
 | `GET /profile`, `PATCH /profile` | token | Read or edit the trader |
 | `POST /messages` | token | Text or voice message: save, correct, clarify or fall back |
 | `GET /entries` | token | Ledger entries, newest first |
@@ -32,12 +34,15 @@ The response examples below were captured from the running app.
 | `POST /access-requests`, `GET /access-requests/{id}/status` | none / claim secret | Lender agent asks for access and collects its token |
 | `GET /agent/summary` | agent token | Totals-only summary for the lender agent |
 | `WS /ws?token=<session token>` | Trader session token | Authenticated change notifications; reconnect and refresh through REST |
+| `POST /demo/reset`, `POST /demo/seed` | none, only when `DEMO_CONTROLS_ENABLED=true` | Clear all traders; create the demo trader and get its token |
 
 ### `POST /onboarding`
 
 `location_name` must be one of the seeded markets or areas: Mile 12, Oyingbo, Ketu, Agege, Mushin, Yaba, Oshodi, Ajah. Matching ignores case, and the trader's coordinates come from the chosen location.
 
 `items` is optional (up to 40). Each item becomes an inventory item; `opening_quantity` adds its opening stock.
+
+`pin` is optional: 4 to 6 digits. With a PIN, the trader can log in again later with phone + PIN; it can also be set later with `/auth/change-pin`.
 
 ```json
 { "name": "Ada Obi", "phone": "08031234567", "business_name": "Ada Foods",
@@ -60,6 +65,13 @@ The response examples below were captured from the running app.
 | Phone already registered | 409 | `phone_taken` |
 | Unknown location | 422 | `unknown_location` |
 | Missing field, or the same item name twice | 422 | `validation_error` |
+
+### Accounts: login, logout, PIN
+
+- **Session tokens** expire after `SESSION_TOKEN_TTL_DAYS` (30 by default). An expired, logged-out or unknown token gives `401`: send the trader to login (or onboarding when they have no PIN).
+- **`POST /auth/login`** `{ "phone": "08031234567", "pin": "1234" }` → `200`, same shape as onboarding (`token`, `trader`). A wrong phone, a trader without a PIN and a wrong PIN all give `401 invalid_credentials`. After 5 wrong PINs in a row, login is locked for 5 minutes: `429 account_locked` (both limits are server settings).
+- **`POST /auth/logout`** → `204`. Ends this device's session only, and closes its WebSocket.
+- **`POST /auth/change-pin`** `{ "current_pin": "1234", "new_pin": "4321" }` → `204`. `current_pin` is required once a PIN exists (wrong → `401`); a trader without a PIN sends only `new_pin`.
 
 ### `GET /profile` and `PATCH /profile`
 
@@ -95,6 +107,7 @@ GET returns the trader object above. PATCH accepts any of `name`, `business_name
 - **Questions the assistant asks** (all built by the server):
   - "How much did you collect for the 2.5 bags?" or "How much did you pay for the 5 bags?" (amount missing)
   - "How much was it?", "Which customer is this for?"
+  - "Do you mean oil?" (goods named differently from the trader's inventory, e.g. "palm oil"). Reply "yes" to count it against that item's stock; "no" saves it as not in inventory.
   - "Do you mean Mama Ngozi?" (a new name that may be an existing customer). Reply "yes" to link it and remember the name; "no" to create a new customer.
   - "Do you mean Mama Bisi or Mama Ngozi?" (a name shared by two customers). Reply with the full name.
   - "Just to confirm: sale of rice, ₦10,000?" (the reading was unsure). Reply "yes" to save, "no" to discard.
@@ -256,6 +269,13 @@ Only the approved scopes appear (`active_days` when granted). There are never cu
 
 **6. Revoke:** `DELETE /access/{id}` from the app. It takes effect at once. Every agent call and decision appears in the request's `log`.
 
+### Demo controls, offline mode, browsers
+
+- **`POST /demo/seed`** (only when the server sets `DEMO_CONTROLS_ENABLED=true`, else `403 demo_controls_disabled`) creates the demo trader if needed and returns `{ "trader_id", "phone": "08030000001", "pin": "1234", "token", "token_type": "bearer" }`. The trader (Tolu Adeyemi, Mushin) has rice, beans, garri (below its reorder level) and oil in stock, and customers Mama Ngozi ("Ngozi", "the rice woman"), Mr Bayo ("Bayo", "Oga Bayo"), Aunty Funke ("Funke") and Iya Sade ("Sade", "the pepper seller"). Safe to call twice; each call returns a new token.
+- **`POST /demo/reset`** deletes every trader and their data (locations and suppliers stay).
+- **`DEMO_MODE=true`** on the server: no model calls; messages are read by rules. The API contract is the same.
+- **Browsers** (a web dashboard) can call the API only from origins listed in the server's `CORS_ORIGINS`. The Flutter app is not affected.
+
 ## Planned (not served yet)
 
 | Work | Task |
@@ -320,3 +340,4 @@ Bottom navigation: Home, Assistant, Inventory, Profile.
 - 2026-10-24: Phase 2 of `server/IMPLEMENTATION_PLAN.md` done (tasks 2.1 to 2.7). New: `POST /inventory`, `PATCH /inventory/{id}`, `POST /inventory/{id}/stock`; main items at onboarding; "Do you mean X?" with yes/no and alias saving; context-aware questions; a different complete entry replaces a pending one; due dates from phrases ("Friday") computed in code; `overdue` and `aliases` on `/customers`; `stock_warning` on entries (oversell saves with no stock movement); Home `top_suggestion` and `recent_entries`; `POST /ask`; consent (`/access-requests`, approve, revoke, `/agent/summary`). Migrations `c3819b46ad50` (entries.stock_warning) and `5b14d59c5953` (consent tables). Business rules validated and decided are recorded in `server/BUSINESS_REQUIREMENTS.txt`. 114 tests pass on SQLite and PostgreSQL.
 - 2026-10-24: Phase 3 review fixes. The WebSocket authenticates with a short-lived database session (an open socket holds no connection); logout and session expiry close open sockets with 4401; the hub keeps references to its send tasks; the ledger's event publisher is injected like the other orchestrators; `inventory_changed` covers every item whose stock moved (including the old item on a correction); legacy sessions' expiry (created_at + TTL) is computed on read instead of written during auth. 12 WebSocket/event tests added; 155 tests pass.
 - 2026-10-24: Phase 4 (demo scope). Eval harness in `server/eval/` (`make eval`: offline 37 of 40); Makefile at the repo root; GitHub Actions runs the backend tests on pushes to `oja`; item and unit names now match ignoring case, spaces and plural endings ("rices" = "rice", "bags" = "bag"), and a sale in a different unit is saved with `check_stock` and no stock movement. No API shape changed. 165 tests pass.
+- 2026-10-24: Item names now follow FR-S25: name first (ignoring case, spaces and plurals), then the model against the trader's inventory; unsure matches ask "Do you mean oil?" (yes/no), otherwise the entry is saved as `not_in_inventory`. Documented the auth endpoints, the optional onboarding `pin`, demo controls, `DEMO_MODE` and CORS for the Flutter integration. No existing response shape changed.

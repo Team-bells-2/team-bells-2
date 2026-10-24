@@ -131,7 +131,7 @@ BR-L9  Stock effect of an entry
   PRD:    FR-S25, FR-S26
   Pre-check: mixed.
           VALIDATED: one movement per entry; flags; unit default from the item.
-          DECISION: unit normalisation and mismatch handling (TODO.txt item 1 / D6).
+          DECISION (resolved, D6): units compare with match_key; a different unit is flagged check_stock.
           CONFLICT: "sale larger than stock moves no stock". PRD FR-S25 says the sale
             "is still saved" and flagged; it does not say stock stays unchanged. Ours
             moves stock (can go negative). Agree one rule.

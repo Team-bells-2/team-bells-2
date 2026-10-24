@@ -1,82 +1,92 @@
-# OJA backend: implementation plan (post-merge fixes)
+# OJA backend: implementation plan
 
-Status as of 2026-10-24, branch `oja` at `3cc07ff`. Source of truth: [final-prd.md](../final-prd.md). Architecture: [app/info.md](app/info.md).
+Status as of 2026-10-24, branch `oja`. Phases 1 to 4 are done for the demo; what is left is listed under "Open work". Source of truth: [final-prd.md](../final-prd.md). The system as built: [app/info-impl.md](app/info-impl.md). The original scaffold plan: [app/info.md](app/info.md).
 
 ## Where we are
 
-**Works today:** these slices are mounted in `server/app` and tested, including against Postgres:
-- onboarding (no main items yet) and profile
-- customers (aliases, balances)
-- ledger (`POST /messages` text and voice, dedupe, clarify, correct, confidence gate)
-- inventory (read only)
-- home
-- suggestions
-- the demo seed command
+**Live and tested** (173 tests, CI on every push to `oja`; the 8-step golden path runs end to end, also offline with `DEMO_MODE`):
 
-Alembic is at `645c930b9cc6` with no drift.
+- onboarding (main items and opening stock, optional PIN), login, logout, session expiry, profile
+- messages (text and voice): dedupe, clarify, correct, confidence check, "Do you mean ...?" for customers and items, due dates, stock effects and warnings
+- entries, customers (aliases, signed balance, overdue), inventory (read and write), Home (profit and loss, restock card, recent entries)
+- restock suggestions, `/ask`, consent and the lender agent summary
+- WebSocket change events, demo reset and seed, `DEMO_MODE`, CORS, LLM rate-limit retry
+- eval harness (offline 37 of 40), Makefile, Alembic migrations up to `355529bd3baa`
 
-**Broken or missing:**
-- **Golden path:** steps 5 to 8 fail. Aliases are never created, there is no `/ask`, stock can't be managed from the app, and there is no consent.
-- **Dead teammate code:** 19 files (about 2,000 lines) of a parallel implementation sit in `server/`. None of it is mounted, and it fails on import.
-- **Mixed files:** `session.py` and `env.py` are part ours, part theirs.
+**Client:** `client/` (Flutter) was not changed by the backend work. Its API integration should start from the contract below.
 
-**Client:** `client/` (Flutter) makes no API calls yet. It keeps a local ledger and uses on-device `speech_to_text`. Our API contract is therefore the one the client integrates against (see [FRONTEND_HANDOFF.md](../FRONTEND_HANDOFF.md) once task 1.4 updates it).
+## For the Flutter developer: what to build against
 
-**Reference:** the teammate's implementation lives in git history at `1a81088`. Read any file with `git show 1a81088:<path>`. Several tasks below port ideas from it into our layers (models, repositories, services, orchestrator, router).
+- **The contract is [FRONTEND_HANDOFF.md](../FRONTEND_HANDOFF.md)**: every endpoint, request and response shape, error code, the message statuses and assistant questions, and the WebSocket events. The live schema is at `/docs` when the server runs. Older notes (the prototype `backend.py/`, earlier drafts of the handoff, the teammate's code at `1a81088`) are not the contract.
+- **Run a local backend:** `make setup`, `make migrate`, `make seed`, `make dev`. For a ready trader with stock and customers, set `DEMO_CONTROLS_ENABLED=true` and call `POST /demo/seed` (returns a token; the demo trader's PIN is 1234). For no model calls at all, set `DEMO_MODE=true`.
+- **Auth:** `Authorization: Bearer <token>` from `POST /onboarding` or `POST /auth/login`. A 401 means back to onboarding or login.
+- **Messages:** send a new `client_message_id` per message and reuse it on retry. Show `message`; when `status` is `clarify`, the trader's next message is the answer (yes/no is understood for "Do you mean ...?" and "Just to confirm ...?").
+- **Live updates:** connect to `/ws?token=<session token>` and refetch on an event; the socket closes with 4401 when the session ends.
+- **Never compute figures in the app:** totals, balances, stock and rankings always come from the API.
 
 ## Working rules (from AGENTS.md)
 
-- One branch per task, never `main`. At most 10 files per commit. No new dependencies without asking.
+- One branch per task, never `main`. Small commits (the team agreed 10 to 12 files at most). No new dependencies without asking.
 - Every task: state assumptions, list changes, log the action in `FRONTEND_HANDOFF.md`.
 - Every new or changed table ships with an Alembic migration. Never edit a merged migration.
 - Settings come from `.env` through `app/shared/env.py`, with no hardcoded values. Add new keys to `.env.example`.
 - Figures (totals, balances, stock, rankings) come from code and the database, never from model output (PRD design rule).
-- Before starting a Phase 2 to 4 task, read the rules listed for it in [BUSINESS_REQUIREMENTS.txt](BUSINESS_REQUIREMENTS.txt), validate each against the PRD, record the result on its STATUS line, and only use rules marked VALIDATED.
+- Rules ported from the earlier implementation are in [BUSINESS_REQUIREMENTS.txt](BUSINESS_REQUIREMENTS.txt); use only those marked VALIDATED.
 
-## Decisions needed before the blocked tasks
+## Decisions (all resolved)
 
-| ID | Decision | Options | Blocks |
-|---|---|---|---|
-| D1 | Login with phone + PIN, plus session expiry | **Resolved:** optional PIN at onboarding or later via `/auth/change-pin`; login works only after a PIN is set. Existing sessions without expiry receive an expiry based on their creation time and `SESSION_TOKEN_TTL_DAYS`. | 3.5 |
-| D2 | Real-time updates | **Resolved:** authenticated server WebSocket at `/ws`; no Flutter changes or dashboard page in this scope. | 3.6 |
-| D3 | Where voice is transcribed | Server STT (built; whisper.cpp needs `--convert` for M4A) / client on-device STT sends text only / both | 3.8 |
-| D4 | Dashboard access without a session token (PRD section 8) | Read-only demo token / enable only when `DEMO_CONTROLS_ENABLED` is set / public reads | 3.3 |
-| D5 | Fixed sector list (PRD D7) | Agree the values, e.g. foodstuff, provisions, fabrics, electronics, other | 4.5 |
-| D6 | Item name matching | See `server/TODO.txt` item 1 | 4.4 |
+| ID | Decision | Outcome |
+|---|---|---|
+| D1 | Login and session expiry | Optional PIN (at onboarding or via `/auth/change-pin`); login works once a PIN exists; sessions expire after `SESSION_TOKEN_TTL_DAYS` (older sessions: from their creation time) |
+| D2 | Real-time updates | Authenticated WebSocket at `/ws`; no Flutter changes or dashboard page in this scope |
+| D3 | Where voice is transcribed | Either: the app may send on-device text, or upload audio to the server's speech-to-text (whisper.cpp with `--convert`, or an online provider via `.env`) |
+| D4 | Dashboard access | The demo trader's token from `POST /demo/seed`; no endpoint is readable without a token |
+| D5 | Fixed sector list | Skipped for the demo; sector stays free text |
+| D6 | Item name matching | Name match ignoring case, spaces and plurals, then the model against the trader's inventory (sure: link; unsure: "Do you mean oil?"; otherwise not in inventory). A different unit is flagged `check_stock`. Suggestions match supplier items by name only |
 
 ## Task overview
 
-| ID | Task | PRD | Priority | Est. | Depends |
-|---|---|---|---|---|---|
-| **Phase 1: Clean up and stabilise** | | | | | |
-| 1.1 | Remove the teammate's dead server code | — | Must | 20m | — |
-| 1.2 | Restore our `session.py` | NFR-3 | Must | 15m | 1.1 |
-| 1.3 | Tidy `env.py`, `.env`, `.env.example` | NFR-7 | Must | 30m | 1.1 |
-| 1.4 | Rewrite `FRONTEND_HANDOFF.md` and the README to our contract | — | Must | 45m | 1.1 |
-| 1.5 | Turn the throwaway end-to-end scripts into repo tests | NFR-11 | Must | 90m | 1.2 |
-| **Phase 2: Golden path** | | | | | |
-| 2.1 | Inventory write endpoints | FR-S23, S24 | Must | 60m | 1.5 |
-| 2.2 | Main items and opening stock at onboarding | FR-S21 | Must | 45m | 2.1 |
-| 2.3 | Customer name confirmation and alias creation | FR-S9 | Must | 90m | 1.5 |
-| 2.4 | `/ask` slice | FR-S11, S32 | Must | 90m | 2.3 |
-| 2.5 | Due dates computed in code, overdue flags | FR-S12 | Should | 60m | 2.4 |
-| 2.6 | Consent slice | FR-S13 to S17 | Must | 2 × 90m | 1.5 |
-| 2.7 | Home restock card and recent entries | FR-S32, C13 | Must | 45m | 2.1 |
-| **Phase 3: Demo safety and NFRs** | | | | | |
-| 3.1 | `DEMO_MODE`: offline rule-based interpretation | NFR-4 | Must | 90m | 2.4 |
-| 3.2 | LLM rate-limit retry | NFR-8 | Should | 30m | — |
-| 3.3 | Demo reset and seed endpoints, judges' dashboard | FR-C6 to C11 | Must | 90m | 2.6, D4 |
-| 3.4 | CORS | NFR-7 | Must | 15m | 1.3 |
-| 3.5 | Session expiry, logout (plus PIN if D1 says so) | NFR-7 | Should | 60m | D1 |
-| 3.6 | Real-time updates | FR-C13, C6 | Should | 60m | D2 |
-| 3.7 | Structured log per message | NFR-10 | Should | 45m | — |
-| 3.8 | Voice path finalised | FR-S2 | Should | 30m | D3 |
-| **Phase 4: Quality and delivery** | | | | | |
-| 4.1 | Eval harness for the server pipeline | FR-S18 to S20 | Must | 2 × 90m | 3.1 |
-| 4.2 | Makefile entry points | NFR-11 | Must | 30m | 1.5 |
-| 4.3 | CI pipeline (needs approval) | T-05, NFR-7 | Must | 60m | 4.2 |
-| 4.4 | Item matching | FR-S25, S30 | Should | 90m | D6 |
-| 4.5 | Fixed sector list | D7 | Could | 20m | D5 |
+| ID | Task | PRD | Status |
+|---|---|---|---|
+| **Phase 1: Clean up and stabilise** | | | |
+| 1.1 | Remove the teammate's dead server code | — | Done |
+| 1.2 | Restore our `session.py` | NFR-3 | Done |
+| 1.3 | Tidy `env.py`, `.env`, `.env.example` | NFR-7 | Done |
+| 1.4 | Rewrite `FRONTEND_HANDOFF.md` and the README to our contract | — | Done |
+| 1.5 | Turn the throwaway end-to-end scripts into repo tests | NFR-11 | Done |
+| **Phase 2: Golden path** | | | |
+| 2.1 | Inventory write endpoints | FR-S23, S24 | Done |
+| 2.2 | Main items and opening stock at onboarding | FR-S21 | Done |
+| 2.3 | Customer name confirmation and alias creation | FR-S9 | Done |
+| 2.4 | `/ask` slice | FR-S11, S32 | Done |
+| 2.5 | Due dates computed in code, overdue flags | FR-S12 | Done |
+| 2.6 | Consent slice | FR-S13 to S17 | Done |
+| 2.7 | Home restock card and recent entries | FR-S32, C13 | Done |
+| **Phase 3: Demo safety and NFRs** | | | |
+| 3.1 | `DEMO_MODE`: offline rule-based interpretation | NFR-4 | Done |
+| 3.2 | LLM rate-limit retry | NFR-8 | Done |
+| 3.3 | Demo reset and seed endpoints (no dashboard page, per D4) | FR-C10 | Done |
+| 3.4 | CORS | NFR-7 | Done |
+| 3.5 | Session expiry, logout, optional PIN | NFR-7 | Done |
+| 3.6 | Real-time updates (WebSocket) | FR-C13, C6 | Done |
+| 3.7 | Structured log per message | NFR-10 | **Open** |
+| 3.8 | Voice path finalised | FR-S2 | Partly: documented; the 5 Pidgin clip test needs real audio |
+| **Phase 4: Quality and delivery** | | | |
+| 4.1 | Eval harness for the server pipeline | FR-S18 to S20 | Done (cases need a second reviewer; live score not yet measured) |
+| 4.2 | Makefile entry points | NFR-11 | Done |
+| 4.3 | CI pipeline (light: backend tests on pushes to `oja`) | T-05 | Done |
+| 4.4 | Item matching | FR-S25, S30 | Done |
+| 4.5 | Fixed sector list | D7 | Skipped (D5) |
+
+## Open work
+
+- 3.7: one structured log line per message (NFR-10).
+- 3.8: test 5 recorded Pidgin voice clips on the chosen speech-to-text.
+- 4.1: a teammate reviews `server/eval/cases.json`; run `make eval-live` once `LLM_API_KEY` is set.
+- Apply and check the migrations on the shared PostgreSQL (`make migrate`, `alembic check`).
+- Flutter: integrate the client with the API (contract above).
+
+The sections below are the original task briefs, kept as a record.
 
 ---
 
@@ -295,7 +305,7 @@ Alembic is at `645c930b9cc6` with no drift.
 **Scope:** GitHub Actions with Postgres. Run migrations, tests, the eval harness on fixtures, a secret scan, and Flutter analyze. Branch protection on `main`.
 **Acceptance:** a pull request is blocked on red.
 
-### 4.4 Item matching (per D6, `server/TODO.txt` item 1)
+### 4.4 Item matching (per D6)
 
 **Scope:** implement the agreed option for matching items between ledger, inventory and suggestions, and for handling units.
 **Acceptance:** "palm oil", "bag of rice" and singular versus plural units behave as agreed. A test covers each case.
