@@ -390,18 +390,27 @@ BR-O3  Phone + PIN accounts
           Login: wrong phone and wrong PIN give the same error and take the same time
           (a dummy hash is checked for unknown phones). 5 wrong PINs lock the account
           for 5 minutes (429 "account_locked"). Logout revokes only this device's
-          session. Change PIN requires the current PIN. Sign-up also at /auth/signup.
+          session. A PIN is optional at onboarding and can be set later via
+          /auth/change-pin; login works only after a PIN exists. Change PIN requires
+          the current PIN once one exists. There is no separate /auth/signup endpoint.
   PRD:    not in the PRD; D7 says "No OTP or password".
-  Pre-check: DECISION (D1 in IMPLEMENTATION_PLAN.md).
+  Decision: D1 resolved (2026-10-24): port PIN login; PIN is optional at onboarding or
+          can be set later by an authenticated trader through /auth/change-pin.
   Task:   3.5
-  STATUS: pending
+  STATUS: VALIDATED (2026-10-24 decision). Implemented in onboarding schemas, services,
+          orchestrator and router; see the auth tests.
 
 BR-O4  Session expiry
   Rule:   Each session expires after SESSION_TOKEN_TTL_DAYS; expired or revoked -> 401.
+          Legacy sessions with expires_at=NULL receive a persisted expiry of
+          created_at + SESSION_TOKEN_TTL_DAYS on first authentication. If that computed
+          expiry has passed, reject the token with 401.
   PRD:    NFR-7, FR-C5
-  Pre-check: VALIDATED.
+  Decision: preserve legacy sessions only until their original configured lifetime ends;
+          never treat a missing expiry as permanent.
   Task:   3.5
-  STATUS: pending
+  STATUS: VALIDATED and implemented (2026-10-24); legacy expiry is assigned and checked
+          in OnboardingOrchestrator.authenticate_session.
 
 
 ------------------------------------------------------------------------------
@@ -553,10 +562,14 @@ BR-R1  WebSocket push
   Rule:   /ws?token=<session token>; invalid token closes with code 4401. Events, sent
           after commit: entry_saved, entry_updated, inventory_changed, profile_updated,
           access_requested, access_decided, access_revoked, access_log. "ping" -> "pong".
-          Single process only (one uvicorn worker).
+          The channel only signals that clients should refresh through authenticated REST;
+          no Flutter or dashboard-page implementation is in scope. Single process only
+          (one Uvicorn worker).
   PRD:    FR-C6, FR-C13 (updates within 3 seconds; PRD suggests polling or server-sent events)
-  Pre-check: DECISION (D2).
-  Task:   3.6   STATUS: pending
+  Decision: D2 resolved (2026-10-24): implement the WebSocket server transport; do not
+          modify Flutter. The judges' dashboard page is explicitly out of scope.
+  Task:   3.6   STATUS: VALIDATED and implemented (2026-10-24); authenticated route,
+          post-commit events and disconnect cleanup verified. No client/dashboard page.
 
 
 ------------------------------------------------------------------------------

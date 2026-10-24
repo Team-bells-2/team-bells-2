@@ -153,6 +153,7 @@ app/
 - `env.py`: `Settings` (pydantic) reading the root `.env`. Required: `DATABASE_URL`, `DB_ECHO`, `DB_POOL_SIZE`, `DB_MAX_OVERFLOW`.
 - `Infrastructure/db`: `Base` (with a naming convention for Alembic), the engine, `SessionLocal`, `get_db()` for FastAPI dependencies and `session_scope()` for atomic units of work.
 - `Infrastructure/llm` and `Infrastructure/SST`: provider wrappers (empty for now).
+- `Infrastructure/realtime`: the in-process event hub used by the authenticated `/ws` route in `onboarding`. Notifications are sent after commit and tell trader clients to refresh through REST; run one Uvicorn worker.
 
 ## 4. How a request flows between slices
 

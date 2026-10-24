@@ -31,6 +31,7 @@ The response examples below were captured from the running app.
 | `GET /access-requests`, `POST /access-requests/{id}/approve`, `DELETE /access/{id}` | token | The trader's consent prompt, decision and revoke |
 | `POST /access-requests`, `GET /access-requests/{id}/status` | none / claim secret | Lender agent asks for access and collects its token |
 | `GET /agent/summary` | agent token | Totals-only summary for the lender agent |
+| `WS /ws?token=<session token>` | Trader session token | Authenticated change notifications; reconnect and refresh through REST |
 
 ### `POST /onboarding`
 
@@ -259,11 +260,24 @@ Only the approved scopes appear (`active_days` when granted). There are never cu
 
 | Work | Task |
 | --- | --- |
-| Offline `DEMO_MODE` | 3.1 |
-| `POST /demo/reset`, `POST /demo/seed`, judges' dashboard | 3.3 |
-| CORS for the dashboard origin | 3.4 |
-| Session expiry, logout (PIN login pending decision D1) | 3.5 |
-| Real-time updates (pending decision D2) | 3.6 |
+| Judges' dashboard page | Not in scope; demo controls remain API-only |
+| Structured per-message logging | 3.7 |
+| Final voice-path validation and five Pidgin clips | 3.8 |
+
+## WebSocket notifications
+
+Connect to `/ws?token=<session token>` using the trader session token. Missing, invalid,
+expired or revoked tokens close with code `4401`. The server accepts the text message
+`ping` and replies `pong`. Change notifications are JSON objects with `type`, `data` and
+`at`; event types are `entry_saved`, `entry_updated`, `inventory_changed`,
+`profile_updated`, `access_requested`, `access_decided`, `access_revoked` and `access_log`.
+They are sent after the corresponding database commit and only to sockets for that trader.
+An open socket is also closed with `4401` when its session logs out (`POST /auth/logout`) or
+expires; reconnect with a fresh token. `inventory_changed` is sent for every item whose stock
+moved, including the old item when a correction changes the item.
+Treat an event as an invalidation signal and refetch authoritative data through the REST
+endpoints above. The in-memory hub requires a single Uvicorn worker. This documents the
+server contract only; the Flutter client is not changed in this task.
 
 ## Screens (from the PRD)
 
@@ -277,7 +291,7 @@ Bottom navigation: Home, Assistant, Inventory, Profile.
 
 ## Agent Action Log
 
-
+- 2026-10-24: Phase 3.5/3.6 decisions recorded. Optional PINs are supported at onboarding or later; legacy sessions without expiry are assigned `created_at + SESSION_TOKEN_TTL_DAYS` on first authentication. Added authenticated WebSocket notifications for ledger, inventory, profile and consent events; no Flutter or dashboard-page changes.
 
 - 2026-10-23: Handoff aligned to OJA and `final-prd.md`; old MerchantPal API is identified as a separate legacy prototype.
 - 2026-10-23: First OJA slices implemented in `server/app/` (SQLAlchemy ORM, Postgres): `onboarding` (traders, sessions, new `locations` table), `profile`, `customers`.
@@ -304,3 +318,4 @@ Bottom navigation: Home, Assistant, Inventory, Profile.
 - 2026-10-24: Wrote `server/IMPLEMENTATION_PLAN.md`: 25 tasks in 4 phases (clean-up, golden path, demo safety, quality) plus 6 open decisions. Correction to the earlier review: the Flutter client makes no API calls yet, so it is not bound to the teammate's API contract.
 - 2026-10-24: Phase 1 of `server/IMPLEMENTATION_PLAN.md` done. Removed the teammate's unmounted server code (business rules kept in `server/BUSINESS_REQUIREMENTS.txt`, source at `1a81088`). Restored `session.py` (no `create_all`). `env.py`: 30 required keys, no code defaults; `.env.example` regrouped. Rewrote this handoff and the README to the live contract. Added 52 repo tests (`server/tests/`, 58 in total, SQLite or `TEST_DATABASE_URL`). Fixed an unclosed multipart upload file in `POST /messages`. No API change.
 - 2026-10-24: Phase 2 of `server/IMPLEMENTATION_PLAN.md` done (tasks 2.1 to 2.7). New: `POST /inventory`, `PATCH /inventory/{id}`, `POST /inventory/{id}/stock`; main items at onboarding; "Do you mean X?" with yes/no and alias saving; context-aware questions; a different complete entry replaces a pending one; due dates from phrases ("Friday") computed in code; `overdue` and `aliases` on `/customers`; `stock_warning` on entries (oversell saves with no stock movement); Home `top_suggestion` and `recent_entries`; `POST /ask`; consent (`/access-requests`, approve, revoke, `/agent/summary`). Migrations `c3819b46ad50` (entries.stock_warning) and `5b14d59c5953` (consent tables). Business rules validated and decided are recorded in `server/BUSINESS_REQUIREMENTS.txt`. 114 tests pass on SQLite and PostgreSQL.
+- 2026-10-24: Phase 3 review fixes. The WebSocket authenticates with a short-lived database session (an open socket holds no connection); logout and session expiry close open sockets with 4401; the hub keeps references to its send tasks; the ledger's event publisher is injected like the other orchestrators; `inventory_changed` covers every item whose stock moved (including the old item on a correction); legacy sessions' expiry (created_at + TTL) is computed on read instead of written during auth. 12 WebSocket/event tests added; 155 tests pass.

@@ -37,8 +37,8 @@ Alembic is at `645c930b9cc6` with no drift.
 
 | ID | Decision | Options | Blocks |
 |---|---|---|---|
-| D1 | Login with phone + PIN, plus session expiry | Port now / later / drop. PRD D7 says no password; you said earlier that login comes later | 3.5 |
-| D2 | Real-time updates for the app and dashboard | Client polling (PRD) / WebSocket (teammate) / server-sent events | 3.6 |
+| D1 | Login with phone + PIN, plus session expiry | **Resolved:** optional PIN at onboarding or later via `/auth/change-pin`; login works only after a PIN is set. Existing sessions without expiry receive an expiry based on their creation time and `SESSION_TOKEN_TTL_DAYS`. | 3.5 |
+| D2 | Real-time updates | **Resolved:** authenticated server WebSocket at `/ws`; no Flutter changes or dashboard page in this scope. | 3.6 |
 | D3 | Where voice is transcribed | Server STT (built; whisper.cpp needs `--convert` for M4A) / client on-device STT sends text only / both | 3.8 |
 | D4 | Dashboard access without a session token (PRD section 8) | Read-only demo token / enable only when `DEMO_CONTROLS_ENABLED` is set / public reads | 3.3 |
 | D5 | Fixed sector list (PRD D7) | Agree the values, e.g. foodstuff, provisions, fabrics, electronics, other | 4.5 |
@@ -247,14 +247,19 @@ Alembic is at `645c930b9cc6` with no drift.
 
 **Scope:**
 - `sessions.expires_at` (migration), with the lifetime from `SESSION_TOKEN_TTL_DAYS`, and `POST /auth/logout`.
-- If D1 is "port": add a PIN hash with scrypt, `POST /auth/login`, `POST /auth/change-pin`, and a lockout after 5 wrong PINs. Reference: `git show 1a81088:server/app/shared/auth.py` and `…/onboarding/index.py`.
+- Optional 4–6 digit PIN at onboarding or later through `POST /auth/change-pin`; `POST /auth/login` is available only after a PIN is set. Store PINs with scrypt and lock out after 5 wrong PINs. Existing sessions with no expiry get `created_at + SESSION_TOKEN_TTL_DAYS` persisted on first authentication; if that time has passed, return 401. Reference: `git show 1a81088:server/app/shared/auth.py` and `…/onboarding/index.py`.
 
-**Acceptance:** an expired or logged-out token returns 401, and the app returns to onboarding (FR-C5).
+**Acceptance:** new and legacy sessions expire on the configured schedule; an expired or logged-out token returns 401. A trader without a PIN cannot log in, but can set one from an active session.
+
+**Status (2026-10-24):** implemented and verified. Legacy sessions without an expiry are assigned their finite expiry on first authentication; expired sessions are rejected.
 
 ### 3.6 Real-time updates (per D2)
 
-**Scope:** if WebSocket, add `/ws?token=` that publishes `entry_saved`, `stock_changed` and `access_requested` events after commit. Reference: `git show 1a81088:server/app/shared/realtime.py`. If polling, there is no server work beyond 2.7 and 3.3.
-**Acceptance:** Home and the dashboard update within 3 seconds of a saved entry.
+**Scope:** add an authenticated `/ws?token=<session token>` endpoint. Reject missing, invalid, expired and revoked tokens with close code `4401`; support `ping`/`pong`; clean up disconnected clients; publish events only after the associated database commit. Event types: `entry_saved`, `entry_updated`, `inventory_changed`, `profile_updated`, `access_requested`, `access_decided`, `access_revoked`, and `access_log`. Keep the hub single-process and document the single-Uvicorn-worker requirement. REST remains the source of truth; events tell clients when to refresh. No Flutter implementation or judges' dashboard page is included in this task.
+
+**Acceptance:** an authenticated socket receives only that trader's events, an unauthenticated socket closes with `4401`, ping receives pong, and saved ledger/inventory/profile/consent changes publish their matching events after commit. Disconnecting a client removes it from the hub. Verify transport behavior without editing Flutter.
+
+**Status (2026-10-24):** implemented and verified with focused backend tests and direct WebSocket checks. No Flutter or dashboard-page changes.
 
 ### 3.7 Structured log per message (NFR-10)
 
