@@ -95,7 +95,7 @@ class _InventoryPageState extends State<InventoryPage> {
                       color: Colors.white.withValues(alpha: 0.18),
                       borderRadius: BorderRadius.circular(20),
                     ),
-                    child: const Text('Mile 12', style: TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w600)),
+                    child: Text(book.market, style: TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w600)),
                   ),
                 ],
               ),

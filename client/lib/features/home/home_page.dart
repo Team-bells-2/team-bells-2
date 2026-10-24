@@ -27,19 +27,19 @@ class HomePage extends StatelessWidget {
             for (final item in reorderLevels.keys)
               if ((book.stock[item] ?? 0) <= reorderLevels[item]!) item,
           ];
-    final debtor = _topDebtor(book);
+    final debtor = book.topDebtor;
     final periodDetail = book.profitPeriodLabel ?? (book.isLive ? 'From API' : 'Today');
     final body = ListView(
       padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
       children: [
         const Text('OJA', style: TextStyle(color: ojaGreen, fontSize: 22, fontWeight: FontWeight.w800)),
         Text(
-          book.isLive ? 'Mile 12 Market, Lagos · live API' : 'Mile 12 Market, Lagos',
+          '${book.market} Market, Lagos',
           style: const TextStyle(color: ojaMuted),
         ),
         const SizedBox(height: 16),
         Text(_greeting(), style: const TextStyle(color: ojaMuted)),
-        const Text('Iya Basira', style: TextStyle(fontSize: 26, fontWeight: FontWeight.w700, color: ojaInk)),
+        Text(book.traderName, style: const TextStyle(fontSize: 26, fontWeight: FontWeight.w700, color: ojaInk)),
         const SizedBox(height: 14),
         OjaCard(
           child: Column(
@@ -49,7 +49,7 @@ class HomePage extends StatelessWidget {
                 children: [
                   const Text('NET PROFIT', style: TextStyle(color: ojaMuted, fontSize: 12, fontWeight: FontWeight.w600, letterSpacing: 0.4)),
                   const Spacer(),
-                  Text('+${naira(book.profit)}', style: const TextStyle(color: ojaGreen, fontWeight: FontWeight.w700)),
+                  Text('${book.profit < 0 ? '' : '+'}${naira(book.profit)}', style: const TextStyle(color: ojaGreen, fontWeight: FontWeight.w700)),
                 ],
               ),
               const SizedBox(height: 6),
@@ -131,20 +131,23 @@ class _RestockCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final ranked = book.isLive && book.marketOffers.isNotEmpty && book.marketItem == item
-        ? book.marketOffers
+    final ranked = book.isLive
+        ? (book.marketItem == item ? book.marketOffers : const <RankedOffer>[])
         : rankOffers(item);
-    final offer = ranked.first.offer;
-    final unit = left == 1 ? offer.unit : (offer.unit.endsWith('s') ? offer.unit : '${offer.unit}s');
-    final place = offer.km > 0 ? '${offer.supplier}  ·  ${offer.km} km  ·  ' : '${offer.supplier}  ·  ';
+    final offer = ranked.isEmpty ? null : ranked.first.offer;
+    final baseUnit = offer?.unit ?? (item == 'oil' ? 'keg' : 'bag');
+    final unit = left == 1 ? baseUnit : (baseUnit.endsWith('s') ? baseUnit : '${baseUnit}s');
+    final place = offer == null ? '' : (offer.km > 0 ? '${offer.supplier}  ·  ${offer.km} km  ·  ' : '${offer.supplier}  ·  ');
     return OjaCard(
       color: ojaGreenSoft,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text('${itemTitle(item)} is low  ·  ${formatQty(left)} $unit left', style: const TextStyle(fontWeight: FontWeight.w700, color: ojaInk)),
-          const SizedBox(height: 6),
-          Text('$place${naira(offer.price)}  ·  Grade ${offer.grade}', style: const TextStyle(color: ojaInk)),
+          if (offer != null) ...[
+            const SizedBox(height: 6),
+            Text('$place${naira(offer.price)}  ·  Grade ${offer.grade}', style: const TextStyle(color: ojaInk)),
+          ],
           Align(
             alignment: Alignment.centerLeft,
             child: TextButton(
@@ -239,18 +242,3 @@ String _kindLabel(EntryKind kind) {
   };
 }
 
-String? _topDebtor(OjaBook book) {
-  String? name;
-  var highest = 0;
-  final seen = <String>{};
-  for (final entry in book.entries) {
-    final customer = entry.customer;
-    if (customer == null || !seen.add(customer)) continue;
-    final balance = book.balanceOf(customer);
-    if (balance > highest) {
-      highest = balance;
-      name = customer;
-    }
-  }
-  return name;
-}

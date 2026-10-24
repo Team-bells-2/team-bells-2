@@ -1,9 +1,6 @@
-import 'dart:io';
-
 import 'package:flutter/material.dart';
-import 'package:record/record.dart';
+import 'package:speech_to_text/speech_to_text.dart';
 
-import '../../core/api/oja_api.dart';
 import '../../core/ledger/ledger.dart';
 import '../../core/theme.dart';
 
@@ -26,15 +23,18 @@ class AssistantPage extends StatefulWidget {
 class _AssistantPageState extends State<AssistantPage> {
   final _composer = TextEditingController();
   final _scroll = ScrollController();
-  final _recorder = AudioRecorder();
+  // Speech is recognised on the phone and sent as text, so voice works without a server
+  // speech-to-text key. `_recording` is true while the phone is listening.
+  final _speech = SpeechToText();
+  var _speechReady = false;
   var _recording = false;
-  var _transcribing = false;
+  final _transcribing = false;
 
   @override
   void dispose() {
     _composer.dispose();
     _scroll.dispose();
-    _recorder.dispose();
+    _speech.cancel();
     super.dispose();
   }
 
@@ -58,85 +58,61 @@ class _AssistantPageState extends State<AssistantPage> {
   }
 
   Future<void> _toggleMic() async {
-    if (!widget.book.isLive) {
-      _snack('Connect to the live API to use server transcription.');
-      return;
-    }
-    if (_transcribing || widget.book.busy) return;
+    if (widget.book.busy) return;
 
     if (_recording) {
-      await _stopAndTranscribe();
-      return;
-    }
-
-    final allowed = await _recorder.hasPermission();
-    if (!allowed) {
-      _snack('Microphone permission is required. Allow it in Settings.');
+      // Stop: the final result arrives in onResult and is sent from there.
+      await _speech.stop();
+      if (mounted) setState(() => _recording = false);
       return;
     }
 
     try {
-      final path = '${Directory.systemTemp.path}/oja_voice_${DateTime.now().millisecondsSinceEpoch}.wav';
-      await _recorder.start(
-        const RecordConfig(
-          encoder: AudioEncoder.wav,
-          numChannels: 1,
-          sampleRate: 16000,
-        ),
-        path: path,
-      );
-      if (!mounted) return;
-      setState(() => _recording = true);
+      _speechReady = _speechReady ||
+          await _speech.initialize(
+            onStatus: (status) {
+              if (!mounted) return;
+              if (status == 'done' || status == 'notListening') setState(() => _recording = false);
+            },
+            onError: (error) {
+              if (!mounted) return;
+              setState(() => _recording = false);
+              if (error.errorMsg == 'error_no_match' || error.errorMsg == 'error_speech_timeout') {
+                _snack('I did not hear anything. Tap the mic and talk again.');
+              }
+            },
+          );
     } catch (_) {
-      if (!mounted) return;
-      setState(() => _recording = false);
-      _snack('Could not start the microphone. Try again.');
+      _speechReady = false;
     }
-  }
+    if (!_speechReady) {
+      _snack('Voice is not available. Allow the microphone in Settings, or type the message.');
+      return;
+    }
 
-  Future<void> _stopAndTranscribe() async {
-    String? path;
-    try {
-      path = await _recorder.stop();
-    } catch (_) {
-      path = null;
-    }
     if (!mounted) return;
-    setState(() {
-      _recording = false;
-      _transcribing = true;
-    });
-
-    if (path == null || path.isEmpty) {
-      setState(() => _transcribing = false);
-      _snack('No audio captured. Hold a bit longer, then stop.');
-      return;
-    }
-
-    final file = File(path);
-    try {
-      final bytes = await file.readAsBytes();
-      if (bytes.isEmpty) {
-        _snack('Recording was empty. Try again.');
-        return;
-      }
-      final transcript = await widget.book.transcribeAudio(bytes, contentType: 'audio/wav');
-      if (!mounted) return;
-      _composer.text = transcript;
-      setState(() => _transcribing = false);
-      await _send(transcript, fromVoice: true);
-    } on OjaApiException catch (error) {
-      if (!mounted) return;
-      _snack(error.message);
-    } catch (_) {
-      if (!mounted) return;
-      _snack('Transcription failed. Type the message instead.');
-    } finally {
-      try {
-        if (await file.exists()) await file.delete();
-      } catch (_) {}
-      if (mounted) setState(() => _transcribing = false);
-    }
+    setState(() => _recording = true);
+    await _speech.listen(
+      onResult: (result) {
+        if (!mounted) return;
+        _composer.value = TextEditingValue(
+          text: result.recognizedWords,
+          selection: TextSelection.collapsed(offset: result.recognizedWords.length),
+        );
+        setState(() {});
+        if (result.finalResult && result.recognizedWords.trim().isNotEmpty) {
+          setState(() => _recording = false);
+          _send(result.recognizedWords, fromVoice: true);
+        }
+      },
+      listenOptions: SpeechListenOptions(
+        listenMode: ListenMode.dictation,
+        partialResults: true,
+        cancelOnError: true,
+        listenFor: const Duration(seconds: 30),
+        pauseFor: const Duration(seconds: 4),
+      ),
+    );
   }
 
   void _snack(String message) {

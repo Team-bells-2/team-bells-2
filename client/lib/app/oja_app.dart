@@ -4,6 +4,7 @@ import '../core/api/oja_api.dart';
 import '../core/ledger/ledger.dart';
 import '../core/theme.dart';
 import '../features/assistant/assistant_page.dart';
+import '../features/auth/auth_page.dart';
 import '../features/home/home_page.dart';
 import '../features/inventory/inventory_page.dart';
 import '../features/profile/profile_page.dart';
@@ -25,6 +26,7 @@ class _OjaAppState extends State<OjaApp> {
   var _tab = 0;
   var _booting = false;
   var _historyLoaded = false;
+  var _signedIn = false;
   String? _bootError;
 
   @override
@@ -35,7 +37,7 @@ class _OjaAppState extends State<OjaApp> {
       _api = OjaApi();
       _book = OjaBook.live(_api!);
       _booting = true;
-      _refresh();
+      _start();
     } else {
       _book = OjaBook.demo();
     }
@@ -50,6 +52,43 @@ class _OjaAppState extends State<OjaApp> {
   bool get _runningUnderTest =>
       WidgetsBinding.instance.runtimeType.toString().contains('TestWidgetsFlutterBinding');
 
+  /// Opens the saved session if there is one; otherwise the signup/login screen shows.
+  Future<void> _start() async {
+    final restored = await _api!.restoreSession();
+    if (!mounted) return;
+    if (!restored) {
+      setState(() => _booting = false);
+      return;
+    }
+    _book.applyTrader(_api!.trader);
+    _signedIn = true;
+    await _refresh();
+  }
+
+  Future<void> _onSignedIn() async {
+    _book
+      ..clearLive()
+      ..applyTrader(_api!.trader);
+    setState(() {
+      _signedIn = true;
+      _booting = true;
+      _historyLoaded = false;
+      _tab = 0;
+    });
+    await _refresh();
+  }
+
+  Future<void> _logOut() async {
+    await _api!.logOut();
+    _book.clearLive();
+    if (!mounted) return;
+    setState(() {
+      _signedIn = false;
+      _bootError = null;
+      _tab = 0;
+    });
+  }
+
   Future<void> _refresh() async {
     try {
       await _book.refreshFromApi();
@@ -61,6 +100,23 @@ class _OjaAppState extends State<OjaApp> {
       setState(() {
         _booting = false;
         _bootError = null;
+      });
+    } on OjaApiException catch (error) {
+      if (!mounted) return;
+      if (error.isUnauthorized) {
+        // Expired or logged-out session: back to the login screen.
+        await _api!.clearSession();
+        _book.clearLive();
+        if (!mounted) return;
+        setState(() {
+          _signedIn = false;
+          _booting = false;
+        });
+        return;
+      }
+      setState(() {
+        _booting = false;
+        _bootError = error.message;
       });
     } catch (error) {
       if (!mounted) return;
@@ -93,7 +149,9 @@ class _OjaAppState extends State<OjaApp> {
         scaffoldBackgroundColor: ojaPage,
         colorScheme: ColorScheme.fromSeed(seedColor: ojaGreen, primary: ojaGreen, surface: Colors.white),
       ),
-      home: Scaffold(
+      home: _live && !_booting && !_signedIn
+          ? AuthPage(api: _api!, onSignedIn: _onSignedIn)
+          : Scaffold(
         body: SafeArea(
           bottom: false,
           child: _booting
@@ -151,7 +209,12 @@ class _OjaAppState extends State<OjaApp> {
                               if (mounted) setState(() {});
                             },
                           ),
-                          ProfilePage(liveApi: _live, apiBaseUrl: _api?.baseUrl),
+                          ProfilePage(
+                            book: _book,
+                            liveApi: _live,
+                            apiBaseUrl: _api?.baseUrl,
+                            onLogOut: _live ? _logOut : null,
+                          ),
                         ],
                       ),
                     ),
