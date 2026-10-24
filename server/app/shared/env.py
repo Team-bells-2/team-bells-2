@@ -7,6 +7,9 @@ ROOT_DIR = Path(__file__).resolve().parents[3]
 
 
 class Settings(BaseSettings):
+    """Every value comes from the root .env (see .env.example); none is defaulted in code,
+    so a missing key stops the app at startup with the key's name."""
+
     model_config = SettingsConfigDict(
         env_file=ROOT_DIR / ".env",
         env_file_encoding="utf-8",
@@ -14,22 +17,11 @@ class Settings(BaseSettings):
         case_sensitive=False,
     )
 
-    DATABASE_URL: str
-    DB_ECHO: bool = False
-    DB_POOL_SIZE: int = 5
-    DB_MAX_OVERFLOW: int = 10
-    OPENAI_API_KEY: str | None = None
-    OPENAI_BASE_URL: str = "https://api.openai.com/v1"
-    OJA_MODEL: str = "gpt-5-nano"
-    OJA_STT_MODEL: str = "whisper-1"
-    LLM_TIMEOUT_SECONDS: float = 15.0
-    # True skips every provider call and uses the rule-based extractor (offline demo, NFR-4).
-    DEMO_MODE: bool = False
-    # Enables POST /demo/reset and /demo/seed. Never enable on a shared deployment.
-    DEMO_CONTROLS_ENABLED: bool = False
-    SESSION_TOKEN_TTL_DAYS: int = 30
-    ACCESS_TOKEN_TTL_MINUTES: int = 43200
-    CORS_ORIGINS: list[str] = []
+    # Database
+    DATABASE_URL: str = Field(default=...)
+    DB_ECHO: bool = Field(default=...)
+    DB_POOL_SIZE: int = Field(default=...)
+    DB_MAX_OVERFLOW: int = Field(default=...)
 
     # LLM: any OpenAI-compatible chat completions endpoint.
     LLM_BASE_URL: str = Field(default=...)
@@ -48,6 +40,10 @@ class Settings(BaseSettings):
 
     # Below this, a complete entry is still confirmed with the trader before saving (FR-S5).
     CONFIDENCE_THRESHOLD: float = Field(default=...)
+    # Model match of a new name to an existing customer (FR-S9): at or above LINK it is linked and
+    # saved as an alias; at or above CONFIRM the trader is asked "Do you mean ...?"; below, a new customer.
+    CUSTOMER_MATCH_LINK_CONFIDENCE: float = Field(default=...)
+    CUSTOMER_MATCH_CONFIRM_CONFIDENCE: float = Field(default=...)
 
     # Restock ranking (FR-S30): the five factor weights and the distance at which the distance score halves.
     SUGGESTION_WEIGHT_DISTANCE: float = Field(default=...)
@@ -60,6 +56,13 @@ class Settings(BaseSettings):
     SUGGESTION_QUALITY_SCORE_A: float = Field(default=...)
     SUGGESTION_QUALITY_SCORE_B: float = Field(default=...)
     SUGGESTION_QUALITY_SCORE_C: float = Field(default=...)
+
+    # Demo and access control. Read now; used by the tasks noted (IMPLEMENTATION_PLAN.md).
+    DEMO_MODE: bool = Field(default=...)  # 3.1: no provider calls, rule-based interpretation
+    DEMO_CONTROLS_ENABLED: bool = Field(default=...)  # 3.3: enables POST /demo/reset and /demo/seed
+    SESSION_TOKEN_TTL_DAYS: int = Field(default=...)  # 3.5: trader session lifetime
+    ACCESS_TOKEN_TTL_MINUTES: int = Field(default=...)  # 2.6: lender agent token lifetime
+    CORS_ORIGINS: list[str] = Field(default=...)  # 3.4: allowed browser origins, a JSON list
 
 
 settings = Settings()
