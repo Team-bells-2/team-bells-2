@@ -41,6 +41,8 @@ class LedgerWorkflowTest(ApiTestCase):
             0.7,
             0.85,
             0.5,
+            0.85,
+            0.5,
             hub,  # no sockets open in these tests, so publishing is a no-op
         )
 
