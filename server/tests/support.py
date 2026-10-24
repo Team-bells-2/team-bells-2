@@ -22,6 +22,8 @@ _TEST_SETTINGS = {
     "LLM_MODEL": "test-model",
     "LLM_TIMEOUT_SECONDS": "5",
     "LLM_MAX_TOKENS": "400",
+    "LLM_RATE_LIMIT_DEFAULT_WAIT_SECONDS": "1.5",
+    "LLM_RATE_LIMIT_MAX_WAIT_SECONDS": "3",
     "STT_BASE_URL": "http://stt.invalid",
     "STT_INFERENCE_PATH": "/v1/audio/transcriptions",
     "STT_API_KEY": "",
@@ -43,6 +45,8 @@ _TEST_SETTINGS = {
     "DEMO_MODE": "false",
     "DEMO_CONTROLS_ENABLED": "false",
     "SESSION_TOKEN_TTL_DAYS": "30",
+    "AUTH_MAX_FAILED_LOGINS": "5",
+    "AUTH_LOCK_MINUTES": "5",
     "ACCESS_TOKEN_TTL_MINUTES": "43200",
     "CORS_ORIGINS": "[]",
 }
@@ -66,12 +70,17 @@ import app.inventory.models  # noqa: E402, F401
 import app.ledger.models  # noqa: E402, F401
 import app.onboarding.models  # noqa: E402, F401
 import app.suggestions.models  # noqa: E402, F401
+from app.customers.repositories.customer_repository import CustomerRepository  # noqa: E402
 from app.demo.orchestrator import DemoOrchestrator  # noqa: E402
 from app.demo.repositories.seed_repository import SeedRepository  # noqa: E402
 from app.inventory.models import InventoryItem, StockMovement  # noqa: E402
+from app.inventory.repositories.inventory_repository import InventoryRepository  # noqa: E402
 from app.main import app  # noqa: E402
+from app.onboarding.repositories.location_repository import LocationRepository  # noqa: E402
+from app.onboarding.repositories.session_repository import SessionRepository  # noqa: E402
+from app.onboarding.repositories.trader_repository import TraderRepository  # noqa: E402
 from app.shared.Infrastructure.db.base import Base  # noqa: E402
-from app.shared.Infrastructure.db.session import get_db  # noqa: E402
+from app.shared.Infrastructure.db.session import get_db, get_session_factory  # noqa: E402
 from app.shared.Infrastructure.llm.client import LLMError, get_llm_client  # noqa: E402
 from app.shared.Infrastructure.SST.client import TranscriptionError, get_transcriber  # noqa: E402
 
@@ -102,6 +111,13 @@ class FakeTranscriber:
         if self.fail:
             raise TranscriptionError("FakeTranscriber: failure requested")
         return self.text
+
+
+def demo_orchestrator(db: Session) -> DemoOrchestrator:
+    return DemoOrchestrator(
+        SeedRepository(db), LocationRepository(db), TraderRepository(db), SessionRepository(db),
+        InventoryRepository(db), CustomerRepository(db), session_ttl_days=30,
+    )
 
 
 def interpretation(**fields: Any) -> dict[str, Any]:
@@ -137,9 +153,10 @@ class ApiTestCase(unittest.TestCase):
         app.dependency_overrides[get_db] = override_db
         app.dependency_overrides[get_llm_client] = lambda: self.llm
         app.dependency_overrides[get_transcriber] = lambda: self.stt
+        app.dependency_overrides[get_session_factory] = lambda: self.Session
         self.client = TestClient(app)
         with self.Session() as db:
-            DemoOrchestrator(SeedRepository(db)).seed_reference_data()
+            demo_orchestrator(db).seed_reference_data()
 
     def tearDown(self) -> None:
         app.dependency_overrides.clear()

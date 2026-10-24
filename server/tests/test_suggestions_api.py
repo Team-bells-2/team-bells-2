@@ -1,10 +1,8 @@
 """GET /suggestions on seeded demo data, and the seed itself (FR-S29 to S31).
 Run: cd server && python -m unittest discover -s tests -t ."""
 
-from app.demo.orchestrator import DemoOrchestrator
-from app.demo.repositories.seed_repository import SeedRepository
 from app.shared.Infrastructure.llm.client import LLMError
-from tests.support import ApiTestCase
+from tests.support import ApiTestCase, demo_orchestrator
 
 
 class SuggestionsApiTest(ApiTestCase):
@@ -46,7 +44,7 @@ class SuggestionsApiTest(ApiTestCase):
         self.assertEqual((response.status_code, response.json()["error"]["code"]), (422, "quantity_required"))
 
     def test_prototype_routes_are_not_served(self) -> None:
-        for path in ("/markets", "/markets/reviews", "/transcribe", "/dashboard", "/auth/login"):
+        for path in ("/markets", "/markets/reviews", "/transcribe", "/dashboard"):
             with self.subTest(path=path):
                 self.assertEqual(self.client.get(path).status_code, 404)
 
@@ -54,5 +52,5 @@ class SuggestionsApiTest(ApiTestCase):
 class SeedTest(ApiTestCase):
     def test_seed_is_idempotent(self) -> None:
         with self.Session() as db:  # setUp already seeded once
-            summary = DemoOrchestrator(SeedRepository(db)).seed_reference_data()
+            summary = demo_orchestrator(db).seed_reference_data()
         self.assertEqual(summary.model_dump(), {"locations_added": 0, "suppliers_added": 0, "offers_added": 0, "reviews_added": 0})

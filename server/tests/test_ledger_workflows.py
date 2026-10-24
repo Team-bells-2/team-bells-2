@@ -17,6 +17,7 @@ from app.ledger.repositories.entry_repository import EntryRepository
 from app.ledger.repositories.processed_message_repository import ProcessedMessageRepository
 from app.ledger.schemas import ExtractedEntry
 from app.shared.errors import AppError
+from app.shared.Infrastructure.realtime.hub import hub
 from tests.support import ApiTestCase, FakeLLM, FakeTranscriber
 
 D = Decimal
@@ -35,11 +36,12 @@ class LedgerWorkflowTest(ApiTestCase):
             CustomerRepository(db),
             InventoryRepository(db),
             ProcessedMessageRepository(db),
-            AIOrchestrator(FakeLLM()),  # pyright: ignore[reportArgumentType]  (no replies queued: offline guess)
+            AIOrchestrator(FakeLLM(), demo_mode=False),  # pyright: ignore[reportArgumentType]  (no replies queued: offline guess)
             FakeTranscriber(),
             0.7,
             0.85,
             0.5,
+            hub,  # no sockets open in these tests, so publishing is a no-op
         )
 
     def count(self, model: type, *conditions: object) -> int:
